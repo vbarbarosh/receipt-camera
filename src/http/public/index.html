@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#101418">
+    <title>Receipt Drop</title>
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" href="icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <h1>Receipt Drop <span id="version"></span></h1>
+        <button id="theme_toggle" type="button" aria-label="Toggle theme">
+            <svg class="icon-sun" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <circle cx="12" cy="12" r="4"></circle>
+                <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
+            </svg>
+            <svg class="icon-moon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"></path>
+            </svg>
+        </button>
+    </header>
+
+    <main>
+        <label id="take" for="file_input">
+            <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                <circle cx="12" cy="13" r="4"></circle>
+            </svg>
+            <span>Take picture</span>
+        </label>
+        <div id="status">photo uploads after you confirm the shot</div>
+        <a id="apk_link" href="receipt-drop.apk">install the native app (one-tap capture)</a>
+    </main>
+
+    <input id="file_input" type="file" accept="image/*" capture="environment" hidden>
+
+    <div id="next" hidden>
+        <label id="next_tap" for="file_input">
+            <span>tap anywhere for next receipt</span>
+            <span id="next_count"></span>
+        </label>
+        <button id="done" type="button">done</button>
+    </div>
+
+    <div id="toast" hidden></div>
+
+    <script type="module" src="app.js"></script>
+</body>
+</html>

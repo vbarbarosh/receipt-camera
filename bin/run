@@ -1,0 +1,26 @@
+#!/bin/bash
+
+# http://www.gnu.org/software/bash/manual/bash.html#The-Set-Builtin
+# http://redsymbol.net/articles/unofficial-bash-strict-mode
+set -o nounset -o errexit -o pipefail
+
+script=`realpath $0`
+scriptdir=`dirname $script`
+scriptname=`basename $script`
+
+# Receipt-drop session in the current directory: the http server receives
+# photos here, the parser processes them as they arrive. Ctrl-C stops both.
+
+http_pid=
+parser_pid=
+trap 'kill $http_pid $parser_pid 2>/dev/null || true' EXIT
+
+node $scriptdir/../src/http &
+http_pid=$!
+
+node $scriptdir/../src/parser --watch &
+parser_pid=$!
+
+# The first process to exit (or Ctrl-C, which reaches both directly) ends the
+# session; the EXIT trap kills whichever is still running.
+wait -n

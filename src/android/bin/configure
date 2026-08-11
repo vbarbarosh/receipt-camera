@@ -1,0 +1,65 @@
+#!/bin/bash
+
+# http://www.gnu.org/software/bash/manual/bash.html#The-Set-Builtin
+# http://redsymbol.net/articles/unofficial-bash-strict-mode
+set -o nounset -o errexit -o pipefail
+
+script=`realpath $0`
+scriptdir=`dirname $script`
+scriptname=`basename $script`
+
+cd $scriptdir/..
+
+# Installs the apk build toolchain into ./toolchain when it is missing:
+# Temurin JDK 17, Android build-tools 34.0.0, platform android-34.
+# $ANDROID overrides the location; bin/build uses the same default.
+
+android=${ANDROID:-$PWD/toolchain}
+jdk=$android/jdk
+bt=$android/sdk/build-tools/34.0.0
+platform=$android/sdk/platforms/android-34
+
+if [ -x $jdk/bin/javac ] && [ -x $bt/aapt2 ] && [ -e $platform/android.jar ]; then
+    echo "$scriptname: apk toolchain ok ($android)"
+    exit 0
+fi
+
+tmp=$android/tmp
+mkdir -p $tmp
+
+if [ ! -x $jdk/bin/javac ]; then
+    echo "$scriptname: downloading JDK 17 (Temurin)..."
+    curl -sSL -o $tmp/jdk.tar.gz \
+        'https://api.adoptium.net/v3/binary/latest/17/ga/linux/x64/jdk/hotspot/normal/eclipse'
+    rm -rf $jdk $tmp/jdk
+    mkdir -p $tmp/jdk
+    tar xzf $tmp/jdk.tar.gz -C $tmp/jdk --strip-components=1
+    mv $tmp/jdk $jdk
+fi
+
+if [ ! -x $bt/aapt2 ]; then
+    echo "$scriptname: downloading Android build-tools 34.0.0..."
+    curl -sSL -o $tmp/build-tools.zip \
+        https://dl.google.com/android/repository/build-tools_r34-linux.zip
+    rm -rf $tmp/build-tools
+    mkdir -p $tmp/build-tools
+    unzip -q $tmp/build-tools.zip -d $tmp/build-tools
+    rm -rf $bt
+    mkdir -p `dirname $bt`
+    mv $tmp/build-tools/android-* $bt
+fi
+
+if [ ! -e $platform/android.jar ]; then
+    echo "$scriptname: downloading Android platform 34..."
+    curl -sSL -o $tmp/platform.zip \
+        https://dl.google.com/android/repository/platform-34-ext7_r03.zip
+    rm -rf $tmp/platform
+    mkdir -p $tmp/platform
+    unzip -q $tmp/platform.zip -d $tmp/platform
+    rm -rf $platform
+    mkdir -p `dirname $platform`
+    mv $tmp/platform/android-* $platform
+fi
+
+rm -rf $tmp
+echo "$scriptname: apk toolchain installed ($android)"

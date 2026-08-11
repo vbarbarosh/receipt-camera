@@ -1,0 +1,24 @@
+#!/bin/bash
+
+# http://www.gnu.org/software/bash/manual/bash.html#The-Set-Builtin
+# http://redsymbol.net/articles/unofficial-bash-strict-mode
+set -o nounset -o errexit -o pipefail
+
+script=`realpath $0`
+scriptdir=`dirname $script`
+scriptname=`basename $script`
+
+cd $scriptdir/..
+
+RED="\e[31m" GREEN="\e[32m" RESET="\e[0m"
+
+EXIT_MESSAGE="${RED}bin/build failed${RESET}"
+trap 'echo -e "$EXIT_MESSAGE"' EXIT
+
+# One shared clock for the whole run: the single ts opens "[MM:SS" and each
+# line's own "component]" label closes it.
+{
+    src/android/bin/build | sed 's/^/android] /'
+} | ts -s '[%M:%S'
+
+EXIT_MESSAGE="${GREEN}bin/build succeeded${RESET}"

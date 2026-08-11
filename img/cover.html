@@ -1,0 +1,324 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+:root {
+    --bg: #f4f5f7;
+    --fg: #15181c;
+    --muted: #5c6570;
+    --accent: #2f6df6;
+    --card: #ffffff;
+    --card-border: #e2e6ea;
+}
+
+:root[data-theme='dark'] {
+    --bg: #101418;
+    --fg: #e8eaed;
+    --muted: #9aa4af;
+    --accent: #4d84ff;
+    --card: #1a2027;
+    --card-border: #2a323c;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    width: 1280px;
+    height: 640px;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: 'Inter', system-ui, sans-serif;
+    display: flex;
+    align-items: center;
+    gap: 56px;
+    padding: 64px 72px;
+    overflow: hidden;
+}
+
+.intro {
+    flex: 1;
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 26px;
+}
+
+.brand svg {
+    width: 92px;
+    height: 92px;
+    display: block;
+}
+
+.brand h1 {
+    font-family: 'Inter Display', 'Inter', system-ui, sans-serif;
+    font-size: 64px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+}
+
+.tagline {
+    margin-top: 34px;
+    max-width: 520px;
+    font-size: 26px;
+    line-height: 1.45;
+    color: var(--muted);
+}
+
+.tagline b {
+    color: var(--fg);
+    font-weight: 600;
+}
+
+.features {
+    margin-top: 30px;
+    font-size: 18px;
+    color: var(--muted);
+}
+
+.features span {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.story {
+    width: 440px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.viewfinder {
+    position: relative;
+    width: 440px;
+    height: 372px;
+    border-radius: 24px;
+    overflow: hidden;
+    background: linear-gradient(105deg, #a9714b 0%, #96613f 55%, #85552f 100%);
+    box-shadow: inset 0 0 90px rgba(0, 0, 0, 0.28);
+}
+
+.grid-v1, .grid-v2, .grid-h1, .grid-h2 {
+    position: absolute;
+    background: rgba(255, 255, 255, 0.14);
+}
+
+.grid-v1 { left: 33.33%; top: 0; width: 1.5px; height: 100%; }
+.grid-v2 { left: 66.66%; top: 0; width: 1.5px; height: 100%; }
+.grid-h1 { top: 33.33%; left: 0; height: 1.5px; width: 100%; }
+.grid-h2 { top: 66.66%; left: 0; height: 1.5px; width: 100%; }
+
+.receipt {
+    position: absolute;
+    left: 132px;
+    top: 44px;
+    width: 176px;
+    height: 252px;
+    transform: rotate(-5deg);
+    background: #ffffff;
+    padding: 20px 18px;
+    clip-path: polygon(0 0, 100% 0, 100% 94%, 87.5% 97.5%, 75% 94%, 62.5% 97.5%,
+        50% 94%, 37.5% 97.5%, 25% 94%, 12.5% 97.5%, 0 94%);
+}
+
+.receipt .r-title {
+    height: 12px;
+    border-radius: 6px;
+    background: #2b313a;
+    width: 96px;
+    margin: 0 auto 16px;
+}
+
+.receipt .r-line {
+    height: 9px;
+    border-radius: 5px;
+    background: #ccd2d9;
+    margin-bottom: 11px;
+}
+
+.receipt .r-line.short {
+    width: 62%;
+}
+
+.receipt .r-total-row {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 14px;
+    margin-bottom: 16px;
+}
+
+.receipt .r-total-row div {
+    height: 11px;
+    border-radius: 5px;
+    background: #2b313a;
+}
+
+.receipt .qr {
+    width: 58px;
+    height: 58px;
+    margin: 0 auto;
+}
+
+.scanbox {
+    position: absolute;
+    left: 118px;
+    top: 30px;
+    width: 204px;
+    height: 282px;
+    transform: rotate(-5deg);
+    border: 3px solid #2fb344;
+    border-radius: 12px;
+    box-shadow: 0 0 26px rgba(47, 179, 68, 0.45), inset 0 0 18px rgba(47, 179, 68, 0.18);
+}
+
+.status {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: 16px;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    background: rgba(0, 0, 0, 0.72);
+    color: #ffffff;
+    font-size: 15px;
+    padding: 8px 16px;
+    border-radius: 16px;
+}
+
+.status .dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #2fb344;
+}
+
+.flow {
+    height: 44px;
+    display: flex;
+    align-items: center;
+}
+
+.file {
+    width: 440px;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    padding: 16px 20px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.file svg {
+    width: 34px;
+    height: 34px;
+    flex: none;
+}
+
+.file .name {
+    font-family: 'DejaVu Sans Mono', monospace;
+    font-size: 16.5px;
+    color: var(--fg);
+}
+
+.file .meta {
+    margin-top: 5px;
+    font-size: 13.5px;
+    color: var(--muted);
+}
+</style>
+</head>
+<body>
+<div class="intro">
+    <div class="brand">
+        <svg viewBox="0 0 512 512">
+            <rect width="512" height="512" rx="96" fill="#2f6df6"/>
+            <path d="M156 96h200v304l-25 20-25-20-25 20-25-20-25 20-25-20-25 20-25-20z" fill="#ffffff"/>
+            <rect x="186" y="140" width="140" height="16" rx="8" fill="#2f6df6"/>
+            <rect x="186" y="184" width="140" height="16" rx="8" fill="#9db9f9"/>
+            <rect x="186" y="228" width="140" height="16" rx="8" fill="#9db9f9"/>
+            <rect x="186" y="272" width="90" height="16" rx="8" fill="#9db9f9"/>
+            <rect x="186" y="330" width="140" height="20" rx="10" fill="#2f6df6"/>
+        </svg>
+        <h1>Receipt Drop</h1>
+    </div>
+    <p class="tagline">Shoot a receipt with your phone.
+        A <b>clean, straightened, named copy</b> lands on your laptop.</p>
+    <p class="features">one-tap capture <span>·</span> fiscal QR lookup <span>·</span> OCR fallback</p>
+</div>
+<div class="story">
+    <div class="viewfinder">
+        <div class="grid-v1"></div>
+        <div class="grid-v2"></div>
+        <div class="grid-h1"></div>
+        <div class="grid-h2"></div>
+        <div class="receipt">
+            <div class="r-title"></div>
+            <div class="r-line"></div>
+            <div class="r-line"></div>
+            <div class="r-line short"></div>
+            <div class="r-total-row">
+                <div style="width: 52px"></div>
+                <div style="width: 40px"></div>
+            </div>
+            <svg class="qr" viewBox="0 0 58 58">
+                <rect width="58" height="58" fill="#ffffff"/>
+                <g fill="#2b313a">
+                    <path d="M0 0h16v16H0zm3 3v10h10V3z"/>
+                    <rect x="6" y="6" width="4" height="4"/>
+                    <path d="M42 0h16v16H42zm3 3v10h10V3z"/>
+                    <rect x="48" y="6" width="4" height="4"/>
+                    <path d="M0 42h16v16H0zm3 3v10h10V45z"/>
+                    <rect x="6" y="48" width="4" height="4"/>
+                    <rect x="22" y="3" width="5" height="5"/>
+                    <rect x="30" y="8" width="5" height="5"/>
+                    <rect x="22" y="14" width="5" height="5"/>
+                    <rect x="33" y="19" width="5" height="5"/>
+                    <rect x="25" y="25" width="5" height="5"/>
+                    <rect x="42" y="24" width="5" height="5"/>
+                    <rect x="50" y="30" width="5" height="5"/>
+                    <rect x="3" y="24" width="5" height="5"/>
+                    <rect x="11" y="30" width="5" height="5"/>
+                    <rect x="19" y="34" width="5" height="5"/>
+                    <rect x="30" y="38" width="5" height="5"/>
+                    <rect x="42" y="42" width="5" height="5"/>
+                    <rect x="50" y="50" width="5" height="5"/>
+                    <rect x="25" y="47" width="5" height="5"/>
+                    <rect x="33" y="52" width="5" height="5"/>
+                </g>
+            </svg>
+        </div>
+        <div class="scanbox"></div>
+        <div class="status"><div class="dot"></div>auto capture · hold steady</div>
+    </div>
+    <div class="flow">
+        <svg width="24" height="40" viewBox="0 0 24 40" fill="none">
+            <path d="M12 2v28m0 0l-8-9m8 9l8-9" stroke="var(--muted)" stroke-width="2.5"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+    </div>
+    <div class="file">
+        <svg viewBox="0 0 34 34" fill="none">
+            <path d="M3 8a3 3 0 013-3h7l4 4h11a3 3 0 013 3v14a3 3 0 01-3 3H6a3 3 0 01-3-3z"
+                fill="var(--accent)" opacity="0.9"/>
+        </svg>
+        <div>
+            <div class="name">20260811_1533_supraten_243.jpg</div>
+            <div class="meta">+ .json sidecar — merchant · date · total</div>
+        </div>
+    </div>
+</div>
+<script>
+document.documentElement.dataset.theme =
+    new URLSearchParams(location.search).get('theme') || 'light';
+</script>
+</body>
+</html>

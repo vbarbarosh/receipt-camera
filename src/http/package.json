@@ -1,0 +1,10 @@
+{
+  "name": "receipt-drop",
+  "private": true,
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@vbarbarosh/node-helpers": "^3.78.0"
+  }
+}

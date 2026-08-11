@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+# Native fiscal-QR decoders, called by index.js ahead of its jsQR/ZXing sweep.
+#
+# Two scanners, because they fail on different receipts:
+#
+#   WeChat    jsQR and ZXing locate a code by scanning for the 1:1:3:1:1 run
+#             that crosses a finder pattern. An under-inked thermal head prints
+#             those finders hollow, the run reads as 1:1:1:1:1:1:1, and
+#             detection never starts — no amount of thresholding recovers it.
+#             WeChat finds the code another way and still reads those.
+#   zxing-cpp the same algorithm as index.js's @zxing/library, but the C++
+#             implementation: it reads thermal receipts the JS port gives up on.
+#
+# Between them they cover every receipt either one can read.
+#
+#   qr_wechat.py --check          exit 0 when both scanners import
+#   qr_wechat.py <image>          print {"url","tl","tr"} on stdout, exit 1 if unread
+#
+# Needs opencv-contrib-python-headless (plain opencv-python has no
+# cv2.wechat_qrcode) and zxing-cpp. WeChat runs without its Caffe models: they
+# are optional, and on this corpus the model-free detector reads one receipt
+# more than they do.
+import json
+import sys
+
+# scales to feed zxing-cpp, relative to the source; a code missed at one
+# sampling grid is often clean at another
+SCALES = (0.72, 1.0, 2.0)
+
+
+def hit(url, tl, tr):
+    return {'url': url,
+            'tl': {'x': float(tl[0]), 'y': float(tl[1])},
+            'tr': {'x': float(tr[0]), 'y': float(tr[1])}}
+
+
+def read_wechat(cv2, image):
+    texts, corners = cv2.wechat_qrcode.WeChatQRCode().detectAndDecode(image)
+    for text, quad in zip(texts, corners):
+        # corners run top-left, top-right, bottom-right, bottom-left in the
+        # code's own frame, so tl->tr carries the rotation index.js needs
+        if text.startswith('http'):
+            return hit(text, quad[0], quad[1])
+    return None
+
+
+def read_zxing(cv2, zxingcpp, image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    for scale in SCALES:
+        scaled = gray if scale == 1.0 else cv2.resize(gray, None, fx=scale, fy=scale,
+                                                      interpolation=cv2.INTER_CUBIC)
+        for binarizer in (zxingcpp.Binarizer.LocalAverage, zxingcpp.Binarizer.GlobalHistogram):
+            for code in zxingcpp.read_barcodes(scaled, formats=zxingcpp.BarcodeFormat.QRCode,
+                                               try_rotate=True, try_downscale=True,
+                                               binarizer=binarizer):
+                if code.text.startswith('http'):
+                    at = code.position
+                    return hit(code.text,
+                               (at.top_left.x / scale, at.top_left.y / scale),
+                               (at.top_right.x / scale, at.top_right.y / scale))
+    return None
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        return 2
+
+    import cv2
+    import zxingcpp
+    if args[0] == '--check':
+        return 0
+
+    image = cv2.imread(args[0])
+    if image is None:
+        return 1
+
+    for read in (read_wechat, lambda c, i: read_zxing(c, zxingcpp, i)):
+        out = read(cv2, image)
+        if out is not None:
+            print(json.dumps(out))
+            return 0
+    return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

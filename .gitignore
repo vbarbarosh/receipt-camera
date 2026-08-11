@@ -1,0 +1,6 @@
+node_modules/
+src/android/build/
+src/android/toolchain/
+src/android/receipt-drop.apk
+src/android/receipt-drop.apk.idsig
+src/http/receipts/
