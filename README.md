@@ -10,6 +10,7 @@ served by your laptop, added to the phone's home screen.
 ## Start
 
     bin/configure
+    bin/build
     cd ~/Documents/receipts
     /path/to/receipt-drop/bin/run
 
