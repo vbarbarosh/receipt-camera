@@ -13,7 +13,7 @@
 #
 # Between them they cover every receipt either one can read.
 #
-#   qr_wechat.py --check          exit 0 when both scanners import
+#   qr_wechat.py --check          exit 0 when both scanners are available
 #   qr_wechat.py <image>          print {"url","tl","tr"} on stdout, exit 1 if unread
 #
 # Needs opencv-contrib-python-headless (plain opencv-python has no
@@ -21,6 +21,7 @@
 # are optional, and on this corpus the model-free detector reads one receipt
 # more than they do.
 import json
+from pathlib import Path
 import sys
 
 # scales to feed zxing-cpp, relative to the source; a code missed at one
@@ -69,6 +70,17 @@ def main():
     import cv2
     import zxingcpp
     if args[0] == '--check':
+        # Decode a known local fixture with each engine. Importing plain
+        # OpenCV alone does not establish that WeChat is actually available.
+        image = cv2.imread(str(Path(__file__).with_name('fixtures') / 'qr-check.png'))
+        if image is None:
+            raise RuntimeError('native QR self-test image is missing')
+        expected = 'https://receipt-drop.invalid/check'
+        for label, read in [('WeChat', lambda: read_wechat(cv2, image)),
+                            ('zxing-cpp', lambda: read_zxing(cv2, zxingcpp, image))]:
+            result = read()
+            if result is None or result['url'] != expected:
+                raise RuntimeError(label + ' failed the QR decode self-test')
         return 0
 
     image = cv2.imread(args[0])

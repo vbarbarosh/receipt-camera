@@ -1,0 +1,15 @@
+#!/bin/bash
+set -o nounset -o errexit -o pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+android=${ANDROID:-$root/toolchain}
+out=$(mktemp -d)
+trap 'rm -rf "$out"' EXIT
+
+# The only Android references are compile-time AF constants. These policy
+# tests run on the JVM without a device or a mocked camera implementation.
+"$android/jdk/bin/javac" -cp "$android/sdk/platforms/android-34/android.jar" -d "$out" \
+    "$root/src/app/receiptdrop/FocusLock.java" \
+    "$root/src/app/receiptdrop/SteadyBox.java" \
+    "$root/tests/app/receiptdrop/CaptureQualityTest.java"
+"$android/jdk/bin/java" -cp "$out" app.receiptdrop.CaptureQualityTest

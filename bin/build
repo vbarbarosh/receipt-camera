@@ -15,10 +15,18 @@ RED="\e[31m" GREEN="\e[32m" RESET="\e[0m"
 EXIT_MESSAGE="${RED}bin/build failed${RESET}"
 trap 'echo -e "$EXIT_MESSAGE"' EXIT
 
+# Builds the apk, then the docker image. The image builds the apk again from
+# the same sources (see Dockerfile), so it always serves the current app; the
+# local build keeps src/android/receipt-drop.apk current for bin/run outside
+# docker. The image is tagged receipt-drop and receipt-drop:apk-<versionCode>.
+#
 # One shared clock for the whole run: the single ts opens "[MM:SS" and each
-# line's own "component]" label closes it.
+# line's own "component]" label closes it. Separator lines carry a bare "]";
+# the final sed glues it to the timestamp: "[00:01 ]" -> "[00:01]".
 {
-    src/android/bin/build | sed 's/^/android] /'
-} | ts -s '[%M:%S'
+    src/android/bin/build 2>&1 | sed -u 's/^/android] /'
+    echo ']'
+    docker build -t receipt-drop -t receipt-drop:apk-`cat src/android/apk-version.txt` . 2>&1 | sed -u 's/^/docker] /'
+} | ts -s '[%M:%S' | sed 's/^\(\[[0-9][0-9]:[0-9][0-9]\) ]$/\1]/'
 
 EXIT_MESSAGE="${GREEN}bin/build succeeded${RESET}"

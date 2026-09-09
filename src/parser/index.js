@@ -14,10 +14,11 @@
 // route failed are flagged once and skipped until their file changes.
 // The QR is read by qr_wechat.py first when its scanners are installed
 // (pip install opencv-contrib-python-headless zxing-cpp) and by the bundled
-// jsQR/ZXing otherwise; the helper is optional and its absence only costs
-// the receipts those two cannot read.
+// jsQR/ZXing for difficult images; startup requires working native scanners
+// and a working rembg model.
 const {createWorker} = require('tesseract.js');
 const {execFile} = require('child_process');
+const {check_dependencies, REMBG_MODEL} = require('./dependencies');
 const fs_exists = require('@vbarbarosh/node-helpers/src/fs_exists');
 const fs_path_basename = require('@vbarbarosh/node-helpers/src/fs_path_basename');
 const fs_path_join = require('@vbarbarosh/node-helpers/src/fs_path_join');
@@ -77,12 +78,15 @@ async function main()
     const watch = args.includes('--watch');
     const dir = fs_path_resolve(args.find(v => !v.startsWith('--')) || '.');
 
-    HAS_REMBG = await has_command('rembg');
+    await check_dependencies(message => log('🧰', message));
+    if (args.includes('--check-dependencies')) return;
+    HAS_REMBG = true;
+    HAS_WECHAT_QR = true;
     HAS_TESSERACT = await has_command('tesseract');
-    HAS_WECHAT_QR = await has_wechat_qr();
+    if (process.send) process.send({type: 'parser-ready'});
 
     log('🧾', `receipt-parser starting in ${dir}${watch ? ' (watch mode)' : ''}`);
-    log('🧰', `detector: ${HAS_REMBG ? 'rembg' : 'chroma mask'} | ocr: ${HAS_TESSERACT ? 'tesseract (ron+eng)' : 'tesseract.js'}`
+    log('🧰', `detector: ${HAS_REMBG ? `rembg (${REMBG_MODEL})` : 'chroma mask'} | ocr: ${HAS_TESSERACT ? 'tesseract (ron+eng)' : 'tesseract.js'}`
         + ` | qr: ${HAS_WECHAT_QR ? 'wechat + jsQR/ZXing' : 'jsQR/ZXing'}`);
     const state = await load_state(dir);
     const settling = new Map();
@@ -145,6 +149,17 @@ function sleep(ms)
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+async function timed_stage(name, stage, fn)
+{
+    const start = performance.now();
+    log('⏱️', `${name}: ${stage}...`);
+    try {
+        return await fn();
+    } finally {
+        log('⏱️', `${name}: ${stage} finished in ${((performance.now() - start) / 1000).toFixed(2)}s`);
+    }
+}
+
 // Run a child process, resolving with its stdout as a Buffer. Child stderr is
 // captured, kept out of the tool's log stream, and attached to the error on
 // failure. opts.input is written to the child's stdin.
@@ -175,16 +190,6 @@ async function has_command(cmd)
 {
     try {
         await run('which', [cmd]);
-        return true;
-    } catch (e) {
-        return false;
-    }
-}
-
-async function has_wechat_qr()
-{
-    try {
-        await run('python3', [WECHAT_HELPER, '--check']);
         return true;
     } catch (e) {
         return false;
@@ -266,7 +271,7 @@ async function rembg_blob(file, mask_file)
 {
     // rembg reads the raw file; bail to the chroma path when EXIF would make
     // its coordinates disagree with the -auto-orient'ed warp space.
-    const orientation = (await run('identify', ['-format', '%[orientation]', file])).toString();
+    const orientation = (await convert([file, '-format', '%[orientation]', 'info:'])).toString();
     if (orientation !== 'Undefined' && orientation !== 'TopLeft') {
         return null;
     }
@@ -274,7 +279,8 @@ async function rembg_blob(file, mask_file)
     // (truncated write); a full second attempt covers that race.
     for (let attempt = 1; attempt <= 2; attempt++) {
         try {
-            await run('rembg', ['i', '-om', file, mask_file]);
+            await timed_stage(fs_path_basename(file), `rembg ${REMBG_MODEL} (attempt ${attempt})`,
+                () => run('rembg', ['i', '-m', REMBG_MODEL, '-om', file, mask_file]));
             const {w, h, px} = parse_pnm(await convert([mask_file, '-resize', '25%', 'pgm:-']));
             const mask = new Uint8Array(w * h);
             for (let i = 0; i < w * h; i++) {
@@ -286,6 +292,9 @@ async function rembg_blob(file, mask_file)
             }
             return {w, h, comp};
         } catch (e) {
+            if (attempt === 1) {
+                log('⚠️', `${fs_path_basename(file)}: rembg attempt failed (${e.message.split('\n')[0]}) — retrying`);
+            }
             if (attempt === 2) {
                 log('⚠️', `${fs_path_basename(file)}: rembg mask failed (${e.message.split('\n')[0]}) — using color mask`);
             }
@@ -668,6 +677,11 @@ async function recognize_text(input)
 
 async function ocr_receipt(name, tmp, reason, orientations)
 {
+    return timed_stage(name, 'OCR', () => ocr_receipt_attempts(name, tmp, reason, orientations));
+}
+
+async function ocr_receipt_attempts(name, tmp, reason, orientations)
+{
     log('🔍', `${name}: falling back to OCR (${reason})`);
     const attempts = [[], ['-colorspace', 'Gray', '-resize', '250%', '-normalize']];
     for (const orient of orientations) {
@@ -723,7 +737,7 @@ function target_base(mev)
 
 async function image_area(file)
 {
-    const [w, h] = (await run('identify', ['-format', '%w %h', file])).toString().split(' ').map(Number);
+    const [w, h] = (await convert([file, '-format', '%w %h', 'info:'])).toString().split(' ').map(Number);
     return w * h;
 }
 
@@ -736,8 +750,8 @@ async function process_file(dir, name)
     let quad;
     let size;
     try {
-        quad = await find_quad(file, fs_path_join(dir, MASK_FILE));
-        size = await warp(file, quad, tmp);
+        quad = await timed_stage(name, 'receipt detection', () => find_quad(file, fs_path_join(dir, MASK_FILE)));
+        size = await timed_stage(name, 'perspective correction', () => warp(file, quad, tmp));
     } catch (e) {
         log('⚠️', `${name}: ${e.message} — skipped`);
         return {status: 'failed', reason: e.message};
@@ -746,7 +760,7 @@ async function process_file(dir, name)
 
     let receipt = null;
     let transient = false;
-    const decoded = await decode_qr([tmp, file]);
+    const decoded = await timed_stage(name, 'QR decoding', () => decode_qr([tmp, file]));
     if (decoded === null) {
         // No QR to orient by: a landscape result must be sideways; portrait may
         // still be upside down — let OCR pick the orientation that parses.
@@ -761,7 +775,7 @@ async function process_file(dir, name)
         }
         log('🔳', `${name}: QR → ${decoded.url}`);
         try {
-            const fetched = await fetch_receipt(decoded.url);
+            const fetched = await timed_stage(name, 'MEV lookup', () => fetch_receipt(decoded.url));
             if (fetched.mev) {
                 receipt = {source: 'mev', ...fetched};
             }

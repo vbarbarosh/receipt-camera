@@ -41,6 +41,11 @@ main().catch(function (e) {
 
 async function main()
 {
+    // The combined launcher already waited for the parser's preflight.
+    if (!process.send) {
+        const {check_dependencies} = require('../parser/dependencies');
+        await check_dependencies();
+    }
     await fs_mkdirp(receipts_dir);
 
     const server = http.createServer(function (req, res) {

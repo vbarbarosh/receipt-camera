@@ -80,7 +80,7 @@ public class MainActivity extends Activity
     // Laplacian energy of a receipt that reads cleanly; sharp shots land near
     // 1500, everything that failed to decode came in under 700.
     private static final double sharp_floor = 900;
-    private static final long focus_lock_timeout_ms = 900;
+    private static final long focus_lock_timeout_ms = 1800;
     // The HAL reports exposure in coarse buckets (10/30/60ms), so the torch
     // tests have to straddle a bucket boundary, and dwell, or it flaps.
     private static final long torch_on_ms = 60;
@@ -89,8 +89,11 @@ public class MainActivity extends Activity
 
     private String app_version = "apk-0";
 
-    private volatile boolean af_reports_states = false;
-    private volatile int af_state = -1;
+    private int preview_af_mode = CaptureRequest.CONTROL_AF_MODE_OFF;
+    private int capture_af_mode = CaptureRequest.CONTROL_AF_MODE_OFF;
+    private boolean optical_stabilization = false;
+    private final FocusLock focus_lock = new FocusLock();
+    private boolean focus_for_auto;
     private volatile long armed_since_ms = 0;
     private int ae_compensation_min = 0;
     private double ae_compensation_step = 0;
@@ -102,6 +105,7 @@ public class MainActivity extends Activity
     private HandlerThread background_thread;
     private volatile boolean burst_active = false;
     private volatile int burst_completed = 0;
+    private boolean burst_images_ready = false;
     private volatile int burst_count = 3;
     private final ArrayList<byte[]> burst_frames = new ArrayList<>();
     private static final int burst_max = 5;
@@ -143,7 +147,7 @@ public class MainActivity extends Activity
     private int max_iso = 800;
     private volatile long preview_exposure_ns = 0;
     private volatile int preview_iso = 0;
-    private final RectF prev_box = new RectF();
+    private final SteadyBox steady_box = new SteadyBox(settle_shift, settle_grow);
     private Size preview_size;
     private Surface preview_surface;
     private final RectF smooth_box = new RectF();
@@ -217,7 +221,7 @@ public class MainActivity extends Activity
         root.addView(shutter, shutter_params);
         shutter.setOnClickListener(view -> {
             auto_armed = false;
-            capture();
+            capture(false);
         });
 
         TextView server_button = new TextView(this);
@@ -343,7 +347,7 @@ public class MainActivity extends Activity
             sensor_manager.registerListener(sensor_listener, gravity, SensorManager.SENSOR_DELAY_GAME);
         last_box_motion_ms = SystemClock.elapsedRealtime();
         armed_since_ms = last_box_motion_ms;
-        prev_box.setEmpty();
+        steady_box.reset();
         lum_valid = false;
         ui_handler.postDelayed(frame_watcher, 400);
         check_server();
@@ -354,7 +358,7 @@ public class MainActivity extends Activity
     {
         ui_handler.removeCallbacks(frame_watcher);
         sensor_manager.unregisterListener(sensor_listener);
-        close_camera();
+        background_handler.post(this::close_camera);
         background_thread.quitSafely();
         try {
             background_thread.join();
@@ -480,6 +484,16 @@ public class MainActivity extends Activity
                 if (facing == null || facing != CameraCharacteristics.LENS_FACING_BACK)
                     continue;
                 camera_id = id;
+                int[] af_modes = chars.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES);
+                preview_af_mode = supports(af_modes, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                    ? CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+                    : supports(af_modes, CaptureRequest.CONTROL_AF_MODE_AUTO)
+                        ? CaptureRequest.CONTROL_AF_MODE_AUTO : CaptureRequest.CONTROL_AF_MODE_OFF;
+                capture_af_mode = supports(af_modes, CaptureRequest.CONTROL_AF_MODE_AUTO)
+                    ? CaptureRequest.CONTROL_AF_MODE_AUTO : preview_af_mode;
+                optical_stabilization = supports(
+                    chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION),
+                    CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON);
                 Integer orientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION);
                 if (orientation != null)
                     sensor_orientation = orientation;
@@ -517,12 +531,32 @@ public class MainActivity extends Activity
                 return;
             }
             log("camera-selected", "jpeg " + jpeg_size + " preview " + preview_size
-                + " sensor " + sensor_orientation + " fps " + still_fps_range);
+                + " sensor " + sensor_orientation + " fps " + still_fps_range
+                + " af " + preview_af_mode + "/" + capture_af_mode + " ois " + optical_stabilization);
             manager.openCamera(camera_id, camera_callback, background_handler);
         } catch (Exception error) {
             log("camera-open-failed", error.toString());
             status.setText("camera failed: " + error.getMessage());
         }
+    }
+
+    private static boolean supports(int[] modes, int wanted)
+    {
+        if (modes != null)
+            for (int mode : modes)
+                if (mode == wanted)
+                    return true;
+        return false;
+    }
+
+    private void apply_camera_controls(CaptureRequest.Builder builder, int af_mode)
+    {
+        builder.set(CaptureRequest.CONTROL_AF_MODE, af_mode);
+        builder.set(CaptureRequest.FLASH_MODE, torch_on
+            ? CaptureRequest.FLASH_MODE_TORCH : CaptureRequest.FLASH_MODE_OFF);
+        if (optical_stabilization)
+            builder.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
+                CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON);
     }
 
     private Size largest(Size[] sizes)
@@ -579,17 +613,24 @@ public class MainActivity extends Activity
         try {
             reader = ImageReader.newInstance(jpeg_size.getWidth(), jpeg_size.getHeight(), ImageFormat.JPEG, burst_max + 1);
             reader.setOnImageAvailableListener(r -> {
+                if (r != reader)
+                    return;
                 Image image = r.acquireNextImage();
+                if (image == null)
+                    return;
                 ByteBuffer buffer = image.getPlanes()[0].getBuffer();
                 byte[] jpeg = new byte[buffer.remaining()];
                 buffer.get(jpeg);
                 image.close();
+                if (!burst_active)
+                    return;
                 burst_frames.add(jpeg);
                 if (burst_frames.size() < burst_count)
                     return;
                 final ArrayList<byte[]> frames = new ArrayList<>(burst_frames);
                 burst_frames.clear();
-                burst_active = false;
+                burst_images_ready = true;
+                finish_burst_if_ready();
                 // scoring and brightening are heavy — keep the camera thread free
                 new Thread(() -> {
                     int best = 0;
@@ -639,11 +680,18 @@ public class MainActivity extends Activity
 
     private void set_torch(boolean on)
     {
-        if (torch_on == on || !torch_available || session == null || background_handler == null)
+        if (background_handler == null)
             return;
-        torch_on = on;
-        log("torch", on ? "on" : "off");
-        background_handler.post(this::start_repeating);
+        background_handler.post(() -> {
+            // A preview mode change would cancel the focus lock during a shot.
+            if (torch_on == on || !torch_available || session == null
+                || awaiting_focus_lock || burst_active)
+                return;
+            torch_on = on;
+            last_motion_ms = SystemClock.elapsedRealtime();
+            log("torch", on ? "on" : "off");
+            start_repeating();
+        });
     }
 
     private void start_repeating()
@@ -651,9 +699,7 @@ public class MainActivity extends Activity
         try {
             CaptureRequest.Builder builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
             builder.addTarget(preview_surface);
-            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
-            if (torch_on)
-                builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH);
+            apply_camera_controls(builder, preview_af_mode);
             session.setRepeatingRequest(builder.build(), preview_callback, background_handler);
         } catch (Exception error) {
             log("preview-failed", error.toString());
@@ -677,6 +723,14 @@ public class MainActivity extends Activity
 
     private void close_camera()
     {
+        awaiting_focus_lock = false;
+        focus_lock.cancel();
+        if (background_handler != null)
+            background_handler.removeCallbacks(focus_lock_expired);
+        last_af_ok_ms = 0;
+        capture_ready = false;
+        burst_active = false;
+        burst_frames.clear();
         if (session != null) {
             session.close();
             session = null;
@@ -691,37 +745,65 @@ public class MainActivity extends Activity
         }
     }
 
-    // Continuous AF parks the lens wherever it last drifted to, and the burst
-    // used to shoot straight over that. Ask for a one-shot lock and let the
-    // burst wait for a converged lens; a lens that never reports back must not
-    // strand the shot, so the timeout fires it anyway.
-    private void capture()
+    // Keep AUTO on both preview and still requests: changing AF mode between
+    // the trigger and the JPEG would reset the lock. Tags reject old results.
+    private void capture(boolean automatic)
+    {
+        if (background_handler != null)
+            background_handler.post(() -> begin_focus_lock(automatic));
+    }
+
+    private void begin_focus_lock(boolean automatic)
     {
         if (session == null || camera == null || burst_active || awaiting_focus_lock)
             return;
+        focus_for_auto = automatic;
+        if (capture_af_mode == CaptureRequest.CONTROL_AF_MODE_OFF) {
+            capture_burst();
+            return;
+        }
         try {
             CaptureRequest.Builder builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
             builder.addTarget(preview_surface);
-            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
-            if (torch_on)
-                builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH);
-            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START);
+            apply_camera_controls(builder, capture_af_mode);
+            builder.setTag(focus_lock.begin());
             awaiting_focus_lock = true;
             focus_lock_started_ms = SystemClock.elapsedRealtime();
+            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START);
             session.capture(builder.build(), preview_callback, background_handler);
+            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
+            session.setRepeatingRequest(builder.build(), preview_callback, background_handler);
             background_handler.postDelayed(focus_lock_expired, focus_lock_timeout_ms);
             runOnUiThread(() -> status.setText("focusing — hold still…"));
         } catch (Exception error) {
-            awaiting_focus_lock = false;
-            log("focus-lock-failed", error.toString());
-            capture_burst();
+            focus_failed(error.toString());
         }
+    }
+
+    private void focus_failed(String reason)
+    {
+        awaiting_focus_lock = false;
+        focus_lock.cancel();
+        background_handler.removeCallbacks(focus_lock_expired);
+        last_af_ok_ms = 0;
+        capture_ready = false;
+        last_capture_ms = SystemClock.elapsedRealtime();
+        release_focus_lock();
+        log("focus-lock-failed", reason);
+        runOnUiThread(() -> status.setText("could not focus — move slightly farther away and hold still"));
+        rearm();
     }
 
     private void focus_locked()
     {
         if (!awaiting_focus_lock)
             return;
+        long now = SystemClock.elapsedRealtime();
+        if (focus_for_auto && (!detection_ok || now - last_motion_ms <= settle_ms
+                || now - last_box_motion_ms <= settle_ms)) {
+            focus_failed("receipt moved while focusing");
+            return;
+        }
         awaiting_focus_lock = false;
         background_handler.removeCallbacks(focus_lock_expired);
         log("focus-lock", "converged in "
@@ -732,9 +814,7 @@ public class MainActivity extends Activity
     private final Runnable focus_lock_expired = () -> {
         if (!awaiting_focus_lock)
             return;
-        awaiting_focus_lock = false;
-        log("focus-lock", "no lock in " + focus_lock_timeout_ms + "ms — shooting anyway");
-        capture_burst();
+        focus_failed("no confirmed lock in " + focus_lock_timeout_ms + "ms");
     };
 
     // the lock has to be released or continuous AF stays frozen on the next
@@ -746,9 +826,7 @@ public class MainActivity extends Activity
         try {
             CaptureRequest.Builder builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
             builder.addTarget(preview_surface);
-            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
-            if (torch_on)
-                builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH);
+            apply_camera_controls(builder, capture_af_mode);
             builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_CANCEL);
             session.capture(builder.build(), preview_callback, background_handler);
             start_repeating();
@@ -767,7 +845,7 @@ public class MainActivity extends Activity
         try {
             CaptureRequest.Builder builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
             builder.addTarget(reader.getSurface());
-            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+            apply_camera_controls(builder, capture_af_mode);
             builder.set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY);
             builder.set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_HIGH_QUALITY);
             builder.set(CaptureRequest.JPEG_ORIENTATION, sensor_orientation);
@@ -818,11 +896,15 @@ public class MainActivity extends Activity
             for (int i = 0; i < burst_count; i++)
                 burst.add(builder.build());
             burst_completed = 0;
+            burst_images_ready = false;
+            burst_frames.clear();
             capture_trigger_ms = SystemClock.elapsedRealtime();
             session.captureBurst(burst, capture_callback, background_handler);
             runOnUiThread(() -> status.setText("capturing — hold still…"));
         } catch (Exception error) {
             burst_active = false;
+            release_focus_lock();
+            rearm();
             log("capture-failed", error.toString());
             runOnUiThread(() -> toast("capture failed: " + error.getMessage()));
         }
@@ -928,6 +1010,14 @@ public class MainActivity extends Activity
         rearm();
     }
 
+    private void finish_burst_if_ready()
+    {
+        if (burst_active && burst_images_ready && burst_completed >= burst_count) {
+            burst_active = false;
+            release_focus_lock();
+        }
+    }
+
     // feedback fires when the exposure has actually completed — the click means
     // "the photo exists, moving is safe", not an echo of the trigger
     private final CameraCaptureSession.CaptureCallback capture_callback =
@@ -936,12 +1026,19 @@ public class MainActivity extends Activity
             public void onCaptureCompleted(CameraCaptureSession completed_session,
                 CaptureRequest request, TotalCaptureResult result)
             {
+                if (completed_session != session)
+                    return;
+                log("still-result", "exposure " + result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
+                    + "ns iso " + result.get(CaptureResult.SENSOR_SENSITIVITY)
+                    + " af " + result.get(CaptureResult.CONTROL_AF_STATE)
+                    + " focus " + result.get(CaptureResult.LENS_FOCUS_DISTANCE)
+                    + " ois " + result.get(CaptureResult.LENS_OPTICAL_STABILIZATION_MODE));
                 burst_completed++;
                 if (burst_completed < burst_count)
                     return;
                 log("capture-timing", "burst of " + burst_count + " done +"
                     + (SystemClock.elapsedRealtime() - capture_trigger_ms) + "ms after trigger");
-                release_focus_lock();
+                finish_burst_if_ready();
                 runOnUiThread(() -> {
                     sound.play(MediaActionSound.SHUTTER_CLICK);
                     Vibrator vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
@@ -958,6 +1055,8 @@ public class MainActivity extends Activity
             public void onCaptureFailed(CameraCaptureSession failed_session,
                 CaptureRequest request, CaptureFailure failure)
             {
+                if (failed_session != session)
+                    return;
                 burst_active = false;
                 burst_frames.clear();
                 release_focus_lock();
@@ -975,31 +1074,24 @@ public class MainActivity extends Activity
             public void onCaptureCompleted(CameraCaptureSession completed_session,
                 CaptureRequest request, TotalCaptureResult result)
             {
+                if (completed_session != session)
+                    return;
                 Integer af = result.get(CaptureResult.CONTROL_AF_STATE);
-                if (af != null)
-                    af_state = af;
-                if (af != null && af != CaptureResult.CONTROL_AF_STATE_INACTIVE)
-                    af_reports_states = true;
-                // INACTIVE means AF is not running, which is not the same as
-                // focused — treating it as focus counts a parked lens as ready.
-                // It only stands in for focus on a device that reports nothing
-                // richer, and stops the moment a real state arrives.
-                boolean converged = af == null
-                    || af == CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED
-                    || af == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED
-                    || (af == CaptureResult.CONTROL_AF_STATE_INACTIVE && !af_reports_states);
-                if (converged)
-                    last_af_ok_ms = SystemClock.elapsedRealtime();
-                if (awaiting_focus_lock && af != null
-                    && (af == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED
-                        || af == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED))
-                    focus_locked();
+                boolean converged = capture_af_mode == CaptureRequest.CONTROL_AF_MODE_OFF
+                    || (af != null && (af == CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED
+                        || af == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED));
+                last_af_ok_ms = converged ? SystemClock.elapsedRealtime() : 0;
                 Long exposure = result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
                 if (exposure != null)
                     preview_exposure_ns = exposure;
                 Integer iso = result.get(CaptureResult.SENSOR_SENSITIVITY);
                 if (iso != null)
                     preview_iso = iso;
+                FocusLock.Decision decision = focus_lock.result(request.getTag(), af);
+                if (decision == FocusLock.Decision.CAPTURE)
+                    focus_locked();
+                else if (decision == FocusLock.Decision.FAIL)
+                    focus_failed("autofocus reported NOT_FOCUSED_LOCKED");
                 maybe_auto_capture();
             }
         };
@@ -1029,15 +1121,19 @@ public class MainActivity extends Activity
 
     private void maybe_auto_capture()
     {
-        if (!auto_enabled || !auto_armed || session == null || !capture_ready || burst_active)
+        if (!auto_enabled || !auto_armed || session == null || !capture_ready || burst_active || awaiting_focus_lock)
             return;
         long now = SystemClock.elapsedRealtime();
+        if (now - last_motion_ms <= settle_ms || now - last_box_motion_ms <= settle_ms)
+            return;
+        if (preview_af_mode == CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE && last_af_ok_ms == 0)
+            return;
         if (now - last_capture_ms < 1500)
             return;
         auto_armed = false;
         last_capture_ms = now;
         log("auto-fire", "waited " + (now - armed_since_ms) + "ms since armed");
-        capture();
+        capture(true);
     }
 
     // frame analysis: visual stillness (sensors miss constant-speed glides) and
@@ -1077,7 +1173,7 @@ public class MainActivity extends Activity
         // single-frame edge flicker (dim rooms) from resetting the steady timer
         if (!detection_ok || detect_box.isEmpty()) {
             last_box_motion_ms = now;
-            prev_box.setEmpty();
+            steady_box.reset();
             smooth_box.setEmpty();
         } else {
             if (smooth_box.isEmpty())
@@ -1088,21 +1184,14 @@ public class MainActivity extends Activity
                     (smooth_box.top + detect_box.top) / 2f,
                     (smooth_box.right + detect_box.right) / 2f,
                     (smooth_box.bottom + detect_box.bottom) / 2f);
-            if (prev_box.isEmpty()) {
+            if (steady_box.moved(smooth_box.centerX(), smooth_box.centerY(),
+                    smooth_box.width(), smooth_box.height()))
                 last_box_motion_ms = now;
-            } else {
-                float dx = Math.abs(smooth_box.centerX() - prev_box.centerX());
-                float dy = Math.abs(smooth_box.centerY() - prev_box.centerY());
-                float dw = Math.abs(smooth_box.width() - prev_box.width());
-                float dh = Math.abs(smooth_box.height() - prev_box.height());
-                if (dx > settle_shift || dy > settle_shift || dw > settle_grow || dh > settle_grow)
-                    last_box_motion_ms = now;
-            }
-            prev_box.set(smooth_box);
         }
 
         boolean still = now - last_motion_ms > settle_ms && now - last_box_motion_ms > settle_ms;
-        boolean af_ok = now - last_af_ok_ms < 1000;
+        boolean af_ok = preview_af_mode != CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+            || (last_af_ok_ms != 0 && now - last_af_ok_ms < 1000);
         boolean level_ok = Math.abs(gravity_x) < 1.2f && Math.abs(gravity_y) < 1.2f;
         capture_ready = detection_ok && still && af_ok;
 
