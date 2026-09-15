@@ -1,11 +1,14 @@
 # Server
 
-Needs Node.js. One-time: run `bin/configure` — it installs the npm
+Needs docker or podman for `bin/run`, and Node.js to run the pieces
+separately. One-time: run `bin/configure` — it installs the npm
 dependencies and, when missing, the apk build toolchain (JDK 17 +
-Android build-tools/platform, ~350 MB into `src/android/toolchain/`).
+Android build-tools/platform, ~350 MB into `src/android/toolchain/`) — then
+`bin/build`, which builds the `receipt-drop` image.
 
 `bin/run` starts the http server and the receipt parser together in the
-current directory; Ctrl-C stops both. Server only:
+current directory, inside the image, on the laptop's own network; Ctrl-C stops
+both. The files it writes belong to you. Server only:
 `node /path/to/receipt-drop/src/http/index.js`. Photos are saved to the
 directory you start it from, or to an explicit folder: `node index.js
 ~/Documents/receipts`. Different port: `PORT=9000 node index.js`. The startup

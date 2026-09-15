@@ -84,4 +84,4 @@ ENV PORT=8080
 EXPOSE 8080
 VOLUME /app/data
 WORKDIR /app/data
-CMD ["/app/bin/run"]
+CMD ["node", "/app/src/run.js"]

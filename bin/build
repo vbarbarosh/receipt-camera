@@ -17,8 +17,9 @@ trap 'echo -e "$EXIT_MESSAGE"' EXIT
 
 # Builds the apk, then the docker image. The image builds the apk again from
 # the same sources (see Dockerfile), so it always serves the current app; the
-# local build keeps src/android/receipt-drop.apk current for bin/run outside
-# docker. The image is tagged receipt-drop and receipt-drop:apk-<versionCode>.
+# local build keeps src/android/receipt-drop.apk current for copying into
+# src/http/public/ (see docs/android.md). The image is tagged receipt-drop and
+# receipt-drop:apk-<versionCode>.
 #
 # One shared clock for the whole run: the single ts opens "[MM:SS" and each
 # line's own "component]" label closes it. Separator lines carry a bare "]";

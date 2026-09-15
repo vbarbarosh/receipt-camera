@@ -8,9 +8,31 @@ script=`realpath $0`
 scriptdir=`dirname $script`
 scriptname=`basename $script`
 
-# Receipt-drop session in the current directory: the http server receives
-# photos here, the parser processes them as they arrive. Ctrl-C stops both.
+PORT=${PORT:-8080}
+REMBG_MODEL=${REMBG_MODEL:-u2net}
 
-# The launcher waits for the parser's successful dependency check before
-# opening the HTTP port, and stops both children if either exits.
-exec node "$scriptdir/../src/run.js"
+tty=()
+if test -t 0; then
+    tty=(-t)
+fi
+
+# The container shares the host network, so the server binds PORT on the
+# laptop itself and its startup log prints the laptop's LAN address, the one
+# the phone opens; behind -p it would print the container's address.
+#
+# The container writes to the mounted folder as the current user. Rootless
+# podman maps container uid 1000 to a subuid, so -u leaves the folder
+# read-only there; --userns=keep-id maps the host user instead.
+if docker --version | grep -q podman; then
+    user=(--userns=keep-id)
+else
+    user=(-u $(id -u):$(id -g))
+fi
+
+exec docker run --rm -i "${tty[@]}" \
+    --network host \
+    -e PORT=$PORT \
+    -e REMBG_MODEL=$REMBG_MODEL \
+    -v "$PWD:/app/data" \
+    "${user[@]}" \
+    receipt-drop
