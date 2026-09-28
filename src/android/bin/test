@@ -1,15 +1,34 @@
 #!/bin/bash
+
+# http://www.gnu.org/software/bash/manual/bash.html#The-Set-Builtin
+# http://redsymbol.net/articles/unofficial-bash-strict-mode
 set -o nounset -o errexit -o pipefail
 
-root=$(cd "$(dirname "$0")/.." && pwd)
-android=${ANDROID:-$root/toolchain}
-out=$(mktemp -d)
-trap 'rm -rf "$out"' EXIT
+script=`realpath $0`
+scriptdir=`dirname $script`
+scriptname=`basename $script`
+
+BLACK="\e[30m" RED="\e[31m" GREEN="\e[32m" YELLOW="\e[33m" BLUE="\e[34m"
+PURPLE="\e[35m" CYAN="\e[36m" WHITE="\e[37m" RESET="\e[0m"
+
+EXIT_MESSAGE="${RED}src/android/bin/test failed${RESET}"
+
+# http://redsymbol.net/articles/bash-exit-traps/
+# http://redsymbol.net/articles/unofficial-bash-strict-mode/#essential-cleanup
+tempdir=`mktemp -d -t tmp.XXXXXXXXXX`
+trap 'rm -rf $tempdir; echo -e "$EXIT_MESSAGE"' EXIT
+cd $tempdir
+
+cd $scriptdir/..
+
+android=${ANDROID:-$PWD/toolchain}
 
 # The only Android references are compile-time AF constants. These policy
 # tests run on the JVM without a device or a mocked camera implementation.
-"$android/jdk/bin/javac" -cp "$android/sdk/platforms/android-34/android.jar" -d "$out" \
-    "$root/src/app/receiptdrop/FocusLock.java" \
-    "$root/src/app/receiptdrop/SteadyBox.java" \
-    "$root/tests/app/receiptdrop/CaptureQualityTest.java"
-"$android/jdk/bin/java" -cp "$out" app.receiptdrop.CaptureQualityTest
+"$android/jdk/bin/javac" -cp "$android/sdk/platforms/android-34/android.jar" -d "$tempdir" \
+    src/app/receiptdrop/FocusLock.java \
+    src/app/receiptdrop/SteadyBox.java \
+    tests/app/receiptdrop/CaptureQualityTest.java
+"$android/jdk/bin/java" -cp "$tempdir" app.receiptdrop.CaptureQualityTest
+
+EXIT_MESSAGE="${GREEN}src/android/bin/test succeeded${RESET}"

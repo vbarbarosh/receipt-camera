@@ -51,14 +51,17 @@ RUN python3 -m venv /opt/venv \
 
 WORKDIR /app
 
+COPY package.json package-lock.json ./
 COPY src/http/package.json src/http/package-lock.json src/http/
 COPY src/parser/package.json src/parser/package-lock.json src/parser/
-RUN npm ci --omit=dev --prefix src/http \
+RUN npm ci --omit=dev \
+    && npm ci --omit=dev --prefix src/http \
     && npm ci --omit=dev --prefix src/parser \
     && npm cache clean --force
 
 COPY bin/ bin/
 COPY src/run.js src/run.js
+COPY src/helpers/ src/helpers/
 COPY src/http/ src/http/
 COPY src/parser/ src/parser/
 COPY --from=apk /app/src/android/receipt-drop.apk src/http/public/receipt-drop.apk

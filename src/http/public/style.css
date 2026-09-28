@@ -6,22 +6,12 @@
     --accent-press: #1e56d6;
 }
 
-:root[data-theme='dark'] {
+:root[data-theme="dark"] {
     --bg: #101418;
     --fg: #e8eaed;
     --muted: #9aa4af;
     --accent: #4d84ff;
     --accent-press: #2f6df6;
-}
-
-@media (prefers-color-scheme: dark) {
-    :root:not([data-theme='light']) {
-        --bg: #101418;
-        --fg: #e8eaed;
-        --muted: #9aa4af;
-        --accent: #4d84ff;
-        --accent-press: #2f6df6;
-    }
 }
 
 * {
@@ -77,7 +67,6 @@ h1 {
 
 #theme_toggle:active {
     color: var(--fg);
-    transition: color 150ms;
 }
 
 .icon-sun {
@@ -88,11 +77,11 @@ h1 {
     display: none;
 }
 
-:root[data-theme='dark'] .icon-sun {
+:root[data-theme="dark"] .icon-sun {
     display: block;
 }
 
-:root[data-theme='light'] .icon-moon {
+:root[data-theme="light"] .icon-moon {
     display: block;
 }
 
@@ -125,7 +114,6 @@ main {
 #take:active {
     background: var(--accent-press);
     transform: scale(0.96);
-    transition: background 120ms, transform 120ms;
 }
 
 #status {
@@ -144,7 +132,6 @@ main {
 
 #apk_link:active {
     color: var(--fg);
-    transition: color 150ms;
 }
 
 #next {
@@ -191,7 +178,6 @@ main {
 #done:active {
     border-color: var(--fg);
     color: var(--fg);
-    transition: border-color 150ms, color 150ms;
 }
 
 #toast {
@@ -213,5 +199,4 @@ main {
 
 #toast.on {
     opacity: 1;
-    transition: opacity 200ms;
 }

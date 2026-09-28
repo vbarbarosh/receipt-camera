@@ -9,16 +9,18 @@
 // sidecar records source "mev" or "ocr" and upgrades to mev when a later
 // photo of the same receipt decodes. Originals are never modified.
 // A re-shoot of an already-processed receipt overwrites the cleaned copy
-// only when it yields more pixels. Progress is logged with time + emoji.
+// only when it yields more pixels. Progress is logged as [group_uid][sender]
+// lines, one group per photo.
 // State lives in <dir>/.receipts_state.json; photos where every extraction
 // route failed are flagged once and skipped until their file changes.
 // The QR is read by qr_wechat.py first when its scanners are installed
 // (pip install opencv-contrib-python-headless zxing-cpp) and by the bundled
 // jsQR/ZXing for difficult images; startup requires working native scanners
 // and a working rembg model.
-const {createWorker} = require('tesseract.js');
-const {execFile} = require('child_process');
-const {check_dependencies, REMBG_MODEL} = require('./dependencies');
+const cli = require('@vbarbarosh/node-helpers/src/cli');
+const dependencies_check = require('./dependencies_check');
+const format_log_value = require('../helpers/format_log_value');
+const format_seconds = require('../helpers/format_seconds');
 const fs_exists = require('@vbarbarosh/node-helpers/src/fs_exists');
 const fs_path_basename = require('@vbarbarosh/node-helpers/src/fs_path_basename');
 const fs_path_join = require('@vbarbarosh/node-helpers/src/fs_path_join');
@@ -30,20 +32,26 @@ const fs_rmf = require('@vbarbarosh/node-helpers/src/fs_rmf');
 const fs_stat = require('@vbarbarosh/node-helpers/src/fs_stat');
 const fs_write_json = require('@vbarbarosh/node-helpers/src/fs_write_json');
 const jsQR = require('jsqr');
+const log = require('../helpers/log');
+const log_group_spawn = require('../helpers/log_group_spawn');
+const rembg_model = require('./rembg_model');
 const zxing = require('@zxing/library');
 
-const UA = 'Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0';
-const STATE_FILE = '.receipts_state.json';
-const TMP_FILE = '.receipts_tmp.jpg';
-const OUTPUT_RE = /^\d{8}_\d{4}_[a-z0-9]+_\d+\.jpe?g$/;
-const IMAGE_RE = /\.(jpe?g|png)$/i;
-const POLL_MS = 3000;
-const RETRY_COOLDOWN_MS = 60000;
-const MASK_FILE = '.receipts_mask.png';
-const WECHAT_HELPER = fs_path_join(__dirname, 'qr_wechat.py');
-// RGBA of the long side squared stays inside run()'s 256 MB stdout buffer at
-// 6000px; past that a variant would be truncated rather than decoded.
-const QR_MAX_LONG_SIDE = 6000;
+const {createWorker} = require('tesseract.js');
+const {execFile} = require('child_process');
+
+const user_agent = 'Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0';
+const state_file = '.receipts_state.json';
+const tmp_file = '.receipts_tmp.jpg';
+const output_re = /^\d{8}_\d{4}_[a-z0-9]+_\d+\.jpe?g$/;
+const image_re = /\.(jpe?g|png)$/i;
+const poll_ms = 3000;
+const retry_cooldown_ms = 60000;
+const mask_file = '.receipts_mask.png';
+const wechat_helper = fs_path_join(__dirname, 'qr_wechat.py');
+// RGBA of the long side squared stays inside command_run()'s 256 MB stdout
+// buffer at 6000px; past that a variant would be truncated rather than decoded.
+const qr_max_long_side = 6000;
 
 // Files whose processing hit a transient error (network), name -> retry-at ms.
 const retry_cooldown = new Map();
@@ -53,12 +61,11 @@ const retry_cooldown = new Map();
 // otherwise), the WeChat scanner ahead of jsQR/ZXing for the fiscal QR.
 // zbar was evaluated and rejected: it cannot read these thermal-printed
 // fiscal QRs even where jsQR/ZXing succeed.
-// Resolved in main() — CommonJS has no top-level await.
-let HAS_REMBG = false;
-let HAS_TESSERACT = false;
-let HAS_WECHAT_QR = false;
+// rembg and the WeChat scanner are checked at startup; tesseract is resolved
+// in main() — CommonJS has no top-level await.
+let has_tesseract = false;
 
-const MERCHANT_ALIASES = [
+const merchant_aliases = [
     ['47TH PARALLEL', 'nr1'],
     ['AGRIMATCO', 'agrimatco'],
     ['SUPRATEN', 'supraten'],
@@ -67,131 +74,136 @@ const MERCHANT_ALIASES = [
 // tesseract.js worker, created lazily by the OCR fallback.
 let ocr_worker = null;
 
-main().catch(function (e) {
-    log('💥', e.message);
-    process.exit(1);
-});
+cli(main);
 
 async function main()
 {
     const args = process.argv.slice(2);
     const watch = args.includes('--watch');
     const dir = fs_path_resolve(args.find(v => !v.startsWith('--')) || '.');
+    const root_uid = log_group_spawn();
 
-    await check_dependencies(message => log('🧰', message));
-    if (args.includes('--check-dependencies')) return;
-    HAS_REMBG = true;
-    HAS_WECHAT_QR = true;
-    HAS_TESSERACT = await has_command('tesseract');
-    if (process.send) process.send({type: 'parser-ready'});
+    await dependencies_check(root_uid);
+    if (args.includes('--check-dependencies')) {
+        return;
+    }
+    has_tesseract = await is_command_available('tesseract');
+    if (process.send) {
+        process.send({type: 'parser-ready'});
+    }
 
-    log('🧾', `receipt-parser starting in ${dir}${watch ? ' (watch mode)' : ''}`);
-    log('🧰', `detector: ${HAS_REMBG ? `rembg (${REMBG_MODEL})` : 'chroma mask'} | ocr: ${HAS_TESSERACT ? 'tesseract (ron+eng)' : 'tesseract.js'}`
-        + ` | qr: ${HAS_WECHAT_QR ? 'wechat + jsQR/ZXing' : 'jsQR/ZXing'}`);
+    const ocr_engine = has_tesseract ? 'tesseract' : 'tesseract.js';
+    log(root_uid, 'parser_start', `dir=${format_log_value(dir)} watch=${watch} detector=rembg model=${rembg_model()} ocr=${ocr_engine} qr=wechat,jsqr,zxing`);
     const state = await load_state(dir);
     const settling = new Map();
 
     // Inventory: report every image's status, queue the unprocessed ones.
     // Settle-check is skipped for files that already exist on start.
     const candidates = await list_candidates(dir);
-    log('📂', `${candidates.length} image(s) in ${dir}`);
+    log(root_uid, 'inventory_begin', `images=${candidates.length}`);
     let queued = 0;
     for (const cand of candidates) {
         const known = state[cand.name];
-        if (known && known.size === cand.size && known.mtime === cand.mtime) {
+        const name = format_log_value(cand.name);
+        if (known && (known.size === cand.size) && (known.mtime === cand.mtime)) {
             if (known.status === 'failed') {
-                log('⚠️', `  ${cand.name}: previously failed (${known.reason}) — retried only if the file changes`);
+                // Retried only if the file changes.
+                log(root_uid, 'inventory_failed', `name=${name} reason=${format_log_value(known.reason)}`);
             }
             else if (await fs_exists(fs_path_join(dir, known.target))) {
-                log('✅', `  ${cand.name}: already processed → ${known.target}`);
+                log(root_uid, 'inventory_done', `name=${name} target=${format_log_value(known.target)}`);
             }
             else {
-                log('🔁', `  ${cand.name}: output ${known.target} is missing — re-queued`);
+                log(root_uid, 'inventory_output_missing', `name=${name} target=${format_log_value(known.target)}`);
                 delete state[cand.name];
                 queued++;
             }
         }
         else {
-            log('⏳', `  ${cand.name}: queued`);
+            log(root_uid, 'inventory_queued', `name=${name}`);
             queued++;
         }
         settling.set(cand.name, cand);
     }
-    log('🚀', queued > 0 ? `processing ${queued} image(s)...` : 'nothing to process');
-    await scan(dir, state, settling);
+    log(root_uid, 'inventory_end', `queued=${queued}`);
+    await scan(root_uid, dir, state, settling);
 
     if (!watch) {
         await shutdown_ocr();
-        log('🏁', 'done');
+        log(root_uid, 'parser_done');
         return;
     }
 
-    log('👀', `watching for new photos (every ${POLL_MS / 1000}s, Ctrl-C to stop)...`);
+    log(root_uid, 'watch_begin', `interval=${format_seconds(poll_ms)}`);
     process.on('SIGINT', async function () {
         await shutdown_ocr();
-        log('👋', 'stopped');
+        log(root_uid, 'watch_end_ok', 'signal=SIGINT');
         process.exit(0);
     });
     for (;;) {
-        await sleep(POLL_MS);
-        await scan(dir, state, settling);
+        await sleep(poll_ms);
+        await scan(root_uid, dir, state, settling);
     }
-}
-
-function log(emoji, message)
-{
-    const now = new Date().toTimeString().slice(0, 8);
-    console.log(`[${now}] ${emoji} ${message}`);
 }
 
 function sleep(ms)
 {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise(v => setTimeout(v, ms));
 }
 
-async function timed_stage(name, stage, fn)
+// Logs <stem>_begin, then <stem>_end_ok or <stem>_end_error with the elapsed time.
+async function log_stage(group_uid, stem, details, fn)
 {
     const start = performance.now();
-    log('⏱️', `${name}: ${stage}...`);
+    log(group_uid, `${stem}_begin`, details);
     try {
-        return await fn();
-    } finally {
-        log('⏱️', `${name}: ${stage} finished in ${((performance.now() - start) / 1000).toFixed(2)}s`);
+        const out = await fn();
+        log(group_uid, `${stem}_end_ok`, format_seconds(performance.now() - start));
+        return out;
+    }
+    catch (error) {
+        log(group_uid, `${stem}_end_error`, `${format_seconds(performance.now() - start)} error=${format_log_value(error.message.split('\n')[0])}`);
+        throw error;
     }
 }
 
 // Run a child process, resolving with its stdout as a Buffer. Child stderr is
 // captured, kept out of the tool's log stream, and attached to the error on
 // failure. opts.input is written to the child's stdin.
-function run(cmd, args, opts = {})
+function command_run(cmd, args, opts = {})
 {
     return new Promise(function (resolve, reject) {
-        const child = execFile(cmd, args, {maxBuffer: 256 * 1024 * 1024, encoding: 'buffer'},
-            function (err, stdout, stderr) {
-                if (err) {
-                    err.stderr = stderr ? stderr.toString() : '';
-                    reject(err);
-                }
-                else {
-                    resolve(stdout);
-                }
-            });
-        child.stdin.on('error', function () { /* child exited before reading stdin */ });
+        const child = execFile(cmd, args, {maxBuffer: 256*1024*1024, encoding: 'buffer'}, function (error, stdout, stderr) {
+            if (error) {
+                error.stderr = stderr ? stderr.toString() : '';
+                reject(error);
+            }
+            else {
+                resolve(stdout);
+            }
+        });
+        // The child may exit before reading stdin.
+        child.stdin.on('error', ignore);
         child.stdin.end(opts.input);
     });
 }
 
-function convert(args, opts)
+function ignore()
 {
-    return run('convert', args, opts);
 }
 
-async function has_command(cmd)
+function convert(args, opts)
+{
+    return command_run('convert', args, opts);
+}
+
+async function is_command_available(cmd)
 {
     try {
-        await run('which', [cmd]);
+        await command_run('which', [cmd]);
         return true;
-    } catch (e) {
+    }
+    catch {
         return false;
     }
 }
@@ -200,14 +212,14 @@ async function has_command(cmd)
 
 function parse_pnm(data)
 {
-    if (data[0] !== 0x50 || (data[1] !== 0x35 && data[1] !== 0x36)) {
+    if ((data[0] !== 0x50) || ((data[1] !== 0x35) && (data[1] !== 0x36))) {
         throw new Error('not a P5/P6 pnm');
     }
-    const channels = data[1] === 0x36 ? 3 : 1;
+    const channels = (data[1] === 0x36) ? 3 : 1;
     const fields = [];
     let pos = 2;
     while (fields.length < 3) {
-        while (data[pos] === 0x20 || data[pos] === 0x09 || data[pos] === 0x0a || data[pos] === 0x0d) {
+        while ((data[pos] === 0x20) || (data[pos] === 0x09) || (data[pos] === 0x0a) || (data[pos] === 0x0d)) {
             pos++;
         }
         if (data[pos] === 0x23) {
@@ -216,8 +228,8 @@ function parse_pnm(data)
             }
             continue;
         }
-        let start = pos;
-        while (data[pos] !== 0x20 && data[pos] !== 0x09 && data[pos] !== 0x0a && data[pos] !== 0x0d) {
+        const start = pos;
+        while ((data[pos] !== 0x20) && (data[pos] !== 0x09) && (data[pos] !== 0x0a) && (data[pos] !== 0x0d)) {
             pos++;
         }
         fields.push(Number(data.slice(start, pos).toString()));
@@ -226,12 +238,12 @@ function parse_pnm(data)
     return {w: fields[0], h: fields[1], px: data.slice(pos), channels};
 }
 
-function largest_component(mask, w, h)
+function find_largest_component(mask, w, h)
 {
-    const seen = new Uint8Array(w * h);
-    const queue = new Int32Array(w * h);
+    const seen = new Uint8Array(w*h);
+    const queue = new Int32Array(w*h);
     let out = null;
-    for (let start = 0; start < w * h; start++) {
+    for (let start = 0; start < w*h; start++) {
         if (!mask[start] || seen[start]) {
             continue;
         }
@@ -252,13 +264,13 @@ function largest_component(mask, w, h)
                 neighbors.push(i + 1);
             }
             for (const j of neighbors) {
-                if (j >= 0 && j < w * h && mask[j] && !seen[j]) {
+                if ((j >= 0) && (j < w*h) && mask[j] && !seen[j]) {
                     seen[j] = 1;
                     queue[tail++] = j;
                 }
             }
         }
-        if (out === null || comp.length > out.length) {
+        if ((out === null) || (comp.length > out.length)) {
             out = comp;
         }
     }
@@ -267,39 +279,42 @@ function largest_component(mask, w, h)
 
 // Receipt blob via rembg's segmentation mask, downscaled to analysis size.
 // Returns null when rembg is unavailable or its mask finds nothing usable.
-async function rembg_blob(file, mask_file)
+async function blob_from_rembg(group_uid, file, mask_path)
 {
     // rembg reads the raw file; bail to the chroma path when EXIF would make
     // its coordinates disagree with the -auto-orient'ed warp space.
     const orientation = (await convert([file, '-format', '%[orientation]', 'info:'])).toString();
-    if (orientation !== 'Undefined' && orientation !== 'TopLeft') {
+    if ((orientation !== 'Undefined') && (orientation !== 'TopLeft')) {
         return null;
     }
     // The mask has occasionally been unreadable right after rembg exits
     // (truncated write); a full second attempt covers that race.
+    const model = rembg_model();
     for (let attempt = 1; attempt <= 2; attempt++) {
         try {
-            await timed_stage(fs_path_basename(file), `rembg ${REMBG_MODEL} (attempt ${attempt})`,
-                () => run('rembg', ['i', '-m', REMBG_MODEL, '-om', file, mask_file]));
-            const {w, h, px} = parse_pnm(await convert([mask_file, '-resize', '25%', 'pgm:-']));
-            const mask = new Uint8Array(w * h);
-            for (let i = 0; i < w * h; i++) {
-                mask[i] = px[i] > 127 ? 1 : 0;
+            await log_stage(group_uid, 'rembg_mask', `model=${model} attempt=${attempt}`, () => command_run('rembg', ['i', '-m', model, '-om', file, mask_path]));
+            const {w, h, px} = parse_pnm(await convert([mask_path, '-resize', '25%', 'pgm:-']));
+            const mask = new Uint8Array(w*h);
+            for (let i = 0; i < w*h; i++) {
+                mask[i] = (px[i] > 127) ? 1 : 0;
             }
-            const comp = largest_component(mask, w, h);
-            if (comp === null || comp.length < (w * h) / 50) {
+            const comp = find_largest_component(mask, w, h);
+            if ((comp === null) || (comp.length < w*h/50)) {
                 return null;
             }
             return {w, h, comp};
-        } catch (e) {
+        }
+        catch (error) {
+            const reason = format_log_value(error.message.split('\n')[0]);
             if (attempt === 1) {
-                log('⚠️', `${fs_path_basename(file)}: rembg attempt failed (${e.message.split('\n')[0]}) — retrying`);
+                log(group_uid, 'rembg_mask_retry', `error=${reason}`);
             }
             if (attempt === 2) {
-                log('⚠️', `${fs_path_basename(file)}: rembg mask failed (${e.message.split('\n')[0]}) — using color mask`);
+                log(group_uid, 'rembg_mask_fallback', `detector=chroma error=${reason}`);
             }
-        } finally {
-            await fs_rmf(mask_file);
+        }
+        finally {
+            await fs_rmf(mask_path);
         }
     }
     return null;
@@ -308,40 +323,40 @@ async function rembg_blob(file, mask_file)
 // Receipt blob via the color heuristic: paper is near-neutral (low chroma)
 // even in shadow; wood is orange with hi-lo >= ~29. Relax only when the
 // strict mask finds no plausible blob.
-async function chroma_blob(file)
+async function blob_from_chroma(file)
 {
     const {w, h, px} = parse_pnm(await convert([file, '-auto-orient', '-resize', '25%', 'ppm:-']));
-    const THRESHOLDS = [[120, 24], [110, 32], [100, 40]];
+    const thresholds = [[120, 24], [110, 32], [100, 40]];
     let best = null;
-    for (const [lo_min, chroma_max] of THRESHOLDS) {
-        const mask = new Uint8Array(w * h);
-        for (let i = 0; i < w * h; i++) {
-            const r = px[3 * i];
-            const g = px[3 * i + 1];
-            const b = px[3 * i + 2];
+    for (const [lo_min, chroma_max] of thresholds) {
+        const mask = new Uint8Array(w*h);
+        for (let i = 0; i < w*h; i++) {
+            const r = px[3*i];
+            const g = px[3*i + 1];
+            const b = px[3*i + 2];
             const lo = Math.min(r, g, b);
             const hi = Math.max(r, g, b);
-            if (lo > lo_min && hi - lo < chroma_max) {
+            if ((lo > lo_min) && (hi - lo < chroma_max)) {
                 mask[i] = 1;
             }
         }
-        const comp = largest_component(mask, w, h);
-        if (comp !== null && comp.length >= (w * h) / 10) {
+        const comp = find_largest_component(mask, w, h);
+        if ((comp !== null) && (comp.length >= w*h/10)) {
             return {w, h, comp};
         }
-        if (comp !== null && (best === null || comp.length > best.length)) {
+        if ((comp !== null) && ((best === null) || (comp.length > best.length))) {
             best = comp;
         }
     }
-    if (best === null || best.length < (w * h) / 50) {
+    if ((best === null) || (best.length < w*h/50)) {
         return null;
     }
     return {w, h, comp: best};
 }
 
-async function find_quad(file, mask_file)
+async function find_quad(group_uid, file, mask_path)
 {
-    const blob = (HAS_REMBG && mask_file && await rembg_blob(file, mask_file)) || await chroma_blob(file);
+    const blob = (await blob_from_rembg(group_uid, file, mask_path)) || (await blob_from_chroma(file));
     if (blob === null) {
         throw new Error('receipt blob not found');
     }
@@ -352,42 +367,42 @@ async function find_quad(file, mask_file)
     let br = null;
     let bl = null;
     for (const i of comp) {
-        const p = [i % w, Math.floor(i / w)];
-        if (tl === null || p[0] + p[1] < tl[0] + tl[1]) {
+        const p = [i % w, Math.floor(i/w)];
+        if ((tl === null) || (p[0] + p[1] < tl[0] + tl[1])) {
             tl = p;
         }
-        if (br === null || p[0] + p[1] > br[0] + br[1]) {
+        if ((br === null) || (p[0] + p[1] > br[0] + br[1])) {
             br = p;
         }
-        if (tr === null || p[0] - p[1] > tr[0] - tr[1]) {
+        if ((tr === null) || (p[0] - p[1] > tr[0] - tr[1])) {
             tr = p;
         }
-        if (bl === null || p[0] - p[1] < bl[0] - bl[1]) {
+        if ((bl === null) || (p[0] - p[1] < bl[0] - bl[1])) {
             bl = p;
         }
     }
 
     const full = (await convert([file, '-auto-orient', '-format', '%w %h', 'info:'])).toString().split(' ').map(Number);
-    const scale = full[0] / w;
-    const scaled = [tl, tr, br, bl].map(v => [v[0] * scale, v[1] * scale]);
+    const scale = full[0]/w;
+    const scaled = [tl, tr, br, bl].map(v => [v[0]*scale, v[1]*scale]);
 
     // The mask boundary sits inside the true paper edge; push every corner
     // out by a few px along both adjacent edges so the crop never shaves text.
-    const MARGIN_PX = 6;
-    function away(from, to) {
+    const margin_px = 6;
+    function direction_from(from, to) {
         const len = Math.hypot(to[0] - from[0], to[1] - from[1]) || 1;
-        return [(to[0] - from[0]) / len, (to[1] - from[1]) / len];
+        return [(to[0] - from[0])/len, (to[1] - from[1])/len];
     }
     const pushed = scaled.map(function (p, i) {
-        const d1 = away(scaled[(i + 1) % 4], p);
-        const d2 = away(scaled[(i + 3) % 4], p);
-        return [p[0] + (d1[0] + d2[0]) * MARGIN_PX, p[1] + (d1[1] + d2[1]) * MARGIN_PX];
+        const d1 = direction_from(scaled[(i + 1) % 4], p);
+        const d2 = direction_from(scaled[(i + 3) % 4], p);
+        return [p[0] + (d1[0] + d2[0])*margin_px, p[1] + (d1[1] + d2[1])*margin_px];
     });
 
     // Bottom corners detect short where the paper edge casts a shadow, and
     // BON FISCAL prints at the paper's cut edge — extend 1.5% along the sides.
     function extend(p, q) {
-        return [q[0] + (q[0] - p[0]) * 0.015, q[1] + (q[1] - p[1]) * 0.015];
+        return [q[0] + (q[0] - p[0])*0.015, q[1] + (q[1] - p[1])*0.015];
     }
     pushed[3] = extend(pushed[0], pushed[3]);
     pushed[2] = extend(pushed[1], pushed[2]);
@@ -397,11 +412,11 @@ async function find_quad(file, mask_file)
 async function warp(file, quad, out_file)
 {
     const [tl, tr, br, bl] = quad;
-    function dist(a, b) {
+    function distance_of(a, b) {
         return Math.hypot(a[0] - b[0], a[1] - b[1]);
     }
-    const w = Math.round(Math.max(dist(tl, tr), dist(bl, br)));
-    const h = Math.round(Math.max(dist(tl, bl), dist(tr, br)));
+    const w = Math.round(Math.max(distance_of(tl, tr), distance_of(bl, br)));
+    const h = Math.round(Math.max(distance_of(tl, bl), distance_of(tr, br)));
     const dst = [[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]];
     const pairs = [];
     for (let i = 0; i < 4; i++) {
@@ -421,23 +436,23 @@ async function warp(file, quad, out_file)
 
 // Quarter-turns needed to make the QR (and so the receipt) upright, from the
 // image-space angle of the QR's top-left -> top-right finder pattern axis.
-function quarter_turns(tl, tr)
+function quarter_turns_from_axis(tl, tr)
 {
-    const angle = Math.atan2(tr.y - tl.y, tr.x - tl.x) * 180 / Math.PI;
-    return ((Math.round(angle / 90) % 4) + 4) % 4;
+    const angle = Math.atan2(tr.y - tl.y, tr.x - tl.x)*180/Math.PI;
+    return ((Math.round(angle/90) % 4) + 4) % 4;
 }
 
 function decode_qr_buffer(buf, w, h)
 {
     const code = jsQR(new Uint8ClampedArray(buf), w, h);
-    if (code !== null && code.data.startsWith('http')) {
+    if ((code !== null) && code.data.startsWith('http')) {
         const {topLeftFinderPattern, topRightFinderPattern} = code.location;
-        return {url: code.data, rot: quarter_turns(topLeftFinderPattern, topRightFinderPattern)};
+        return {url: code.data, rot: quarter_turns_from_axis(topLeftFinderPattern, topRightFinderPattern)};
     }
 
-    const lum = new Int32Array(w * h);
-    for (let i = 0; i < w * h; i++) {
-        lum[i] = buf[i * 4];
+    const lum = new Int32Array(w*h);
+    for (let i = 0; i < w*h; i++) {
+        lum[i] = buf[i*4];
     }
     const source = new zxing.RGBLuminanceSource(lum, w, h);
     const hints = new Map([[zxing.DecodeHintType.TRY_HARDER, true]]);
@@ -450,9 +465,12 @@ function decode_qr_buffer(buf, w, h)
                 const points = result.getResultPoints();
                 const tl = {x: points[1].getX(), y: points[1].getY()};
                 const tr = {x: points[2].getX(), y: points[2].getY()};
-                return {url: text, rot: quarter_turns(tl, tr)};
+                return {url: text, rot: quarter_turns_from_axis(tl, tr)};
             }
-        } catch (e) { /* next binarizer */ }
+        }
+        catch {
+            // next binarizer
+        }
     }
     return null;
 }
@@ -462,13 +480,11 @@ function decode_qr_buffer(buf, w, h)
 // skips the nine convert() passes below.
 async function decode_qr_wechat(src)
 {
-    if (!HAS_WECHAT_QR) {
-        return null;
-    }
     try {
-        const hit = JSON.parse((await run('python3', [WECHAT_HELPER, src])).toString());
-        return {url: hit.url, rot: quarter_turns(hit.tl, hit.tr)};
-    } catch (e) {
+        const hit = JSON.parse((await command_run('python3', [wechat_helper, src])).toString());
+        return {url: hit.url, rot: quarter_turns_from_axis(hit.tl, hit.tr)};
+    }
+    catch {
         return null;
     }
 }
@@ -487,16 +503,19 @@ async function decode_qr(sources)
         }
         const [w0, h0] = (await convert([src, '-auto-orient', '-format', '%w %h', 'info:'])).toString().split(' ').map(Number);
         for (const [pre, scale] of variants) {
-            const eff = Math.min(scale, QR_MAX_LONG_SIDE / Math.max(w0, h0));
-            const w = Math.round(w0 * eff);
-            const h = Math.round(h0 * eff);
+            const eff = Math.min(scale, qr_max_long_side/Math.max(w0, h0));
+            const w = Math.round(w0*eff);
+            const h = Math.round(h0*eff);
             try {
                 const raw = await convert([src, '-auto-orient', '-colorspace', 'Gray', '-resize', `${w}x${h}!`, ...pre, '-depth', '8', 'rgba:-']);
                 const decoded = decode_qr_buffer(raw, w, h);
                 if (decoded !== null) {
                     return decoded;
                 }
-            } catch (e) { /* try next variant */ }
+            }
+            catch {
+                // try next variant
+            }
         }
     }
     return null;
@@ -513,10 +532,13 @@ function parse_initial_data(html)
         try {
             const json = JSON.parse(unescaped);
             const receipt = json.serverMemo && json.serverMemo.data && json.serverMemo.data.receipt;
-            if (Array.isArray(receipt) && receipt.length > 0) {
+            if (Array.isArray(receipt) && (receipt.length > 0)) {
                 return receipt;
             }
-        } catch (e) { /* not the receipt component */ }
+        }
+        catch {
+            // not the receipt component
+        }
     }
     return null;
 }
@@ -549,22 +571,23 @@ function parse_receipt_lines(lines)
     return out;
 }
 
-async function fetch_with_retry(url, opts)
+async function fetch_with_retry(group_uid, url, opts)
 {
     for (let attempt = 1; ; attempt++) {
         try {
             return await fetch(url, opts);
-        } catch (e) {
+        }
+        catch (error) {
             if (attempt === 3) {
-                throw e;
+                throw error;
             }
-            log('🔁', `fetch failed (${e.message}), retrying in ${attempt * 2}s...`);
-            await sleep(attempt * 2000);
+            log(group_uid, 'mev_fetch_retry', `attempt=${attempt} delay=${format_seconds(attempt*2000)} error=${format_log_value(error.message)}`);
+            await sleep(attempt*2000);
         }
     }
 }
 
-async function fetch_receipt(qr_url)
+async function fetch_receipt(group_uid, qr_url)
 {
     const out = {qr_url};
     const old_format = qr_url.match(/\/receipt\/([A-Z]\d+)\/(\d+[.,]\d{2})\/(\d+)\/(\d{4}-\d{2}-\d{2})$/);
@@ -576,7 +599,7 @@ async function fetch_receipt(qr_url)
             date: old_format[4],
         };
     }
-    const resp = await fetch_with_retry(qr_url, {headers: {'User-Agent': UA, 'Accept-Language': 'ro,en;q=0.7'}});
+    const resp = await fetch_with_retry(group_uid, qr_url, {headers: {'User-Agent': user_agent, 'Accept-Language': 'ro,en;q=0.7'}});
     out.http_status = resp.status;
     if (resp.ok) {
         const lines = parse_initial_data(await resp.text());
@@ -590,11 +613,11 @@ async function fetch_receipt(qr_url)
 
 // ---- OCR fallback (used when the QR or the MEV page is unavailable) ----
 
-async function get_ocr_worker()
+async function get_ocr_worker(group_uid)
 {
     if (ocr_worker === null) {
-        log('🔍', 'loading OCR engine (first run downloads language data)...');
-        ocr_worker = await createWorker('eng', 1, {cachePath: __dirname});
+        // The first run downloads language data.
+        ocr_worker = await log_stage(group_uid, 'ocr_worker_load', '', () => createWorker('eng', 1, {cachePath: __dirname}));
     }
     return ocr_worker;
 }
@@ -618,7 +641,7 @@ function parse_ocr_text(text)
             out.merchant = 'FARMACIA';
             break;
         }
-        const alias = MERCHANT_ALIASES.find(([needle]) => upper.includes(needle));
+        const alias = merchant_aliases.find(v => upper.includes(v[0]));
         if (alias) {
             out.merchant = alias[0];
             break;
@@ -629,31 +652,31 @@ function parse_ocr_text(text)
     }
 
     // OCR often splits decimals ("429. 49") — allow one space after the separator.
-    const AMOUNT = String.raw`(\d+[.,]\s?\d{2})`;
-    function amount(s) {
+    const amount_pattern = String.raw`(\d+[.,]\s?\d{2})`;
+    function amount_from_text(s) {
         return Number(s.replace(/\s/g, '').replace(',', '.'));
     }
     let m;
-    if ((m = text.match(new RegExp(String.raw`TOTAL(?:\s+LEI)?\s*[.:]*\s*${AMOUNT}`, 'i')))) {
-        out.total = amount(m[1]);
+    if ((m = text.match(new RegExp(String.raw`TOTAL(?:\s+LEI)?\s*[.:]*\s*${amount_pattern}`, 'i')))) {
+        out.total = amount_from_text(m[1]);
     }
-    const numerar = (m = text.match(new RegExp(String.raw`NUMERAR(?:\s+LEI)?\s*[.:]*\s*${AMOUNT}`, 'i'))) ? amount(m[1]) : null;
-    const rest = (m = text.match(new RegExp(String.raw`REST(?::?\s*NUMERAR)?(?:\s+LEI)?\s*[.:]*\s*${AMOUNT}`, 'i'))) ? amount(m[1]) : null;
-    if (out.total !== null && numerar !== null && rest !== null) {
+    const numerar = (m = text.match(new RegExp(String.raw`NUMERAR(?:\s+LEI)?\s*[.:]*\s*${amount_pattern}`, 'i'))) ? amount_from_text(m[1]) : null;
+    const rest = (m = text.match(new RegExp(String.raw`REST(?::?\s*NUMERAR)?(?:\s+LEI)?\s*[.:]*\s*${amount_pattern}`, 'i'))) ? amount_from_text(m[1]) : null;
+    if ((out.total !== null) && (numerar !== null) && (rest !== null)) {
         out.total_confirmed = Math.abs(numerar - rest - out.total) < 0.005;
     }
 
-    function plausible(d, mo) {
-        return Number(d) >= 1 && Number(d) <= 31 && Number(mo) >= 1 && Number(mo) <= 12;
+    function is_plausible_date(d, mo) {
+        return (Number(d) >= 1) && (Number(d) <= 31) && (Number(mo) >= 1) && (Number(mo) <= 12);
     }
-    if ((m = text.match(/\b(\d{2})-(\d{2})-(20\d{2})\s+(\d{2}:\d{2}(?::\d{2})?)\b/)) && plausible(m[1], m[2])) {
+    if ((m = text.match(/\b(\d{2})-(\d{2})-(20\d{2})\s+(\d{2}:\d{2}(?::\d{2})?)\b/)) && is_plausible_date(m[1], m[2])) {
         out.date = `${m[3]}-${m[2]}-${m[1]}`;
         out.time = m[4];
     }
     else {
         const dm = text.match(/\b(\d{2})-(\d{2})-(20\d{2})\b/);
         const tm = text.match(/\b(\d{2}:\d{2}:\d{2})\b/);
-        if (dm && tm && plausible(dm[1], dm[2])) {
+        if (dm && tm && is_plausible_date(dm[1], dm[2])) {
             out.date = `${dm[3]}-${dm[2]}-${dm[1]}`;
             out.time = tm[1];
         }
@@ -661,41 +684,39 @@ function parse_ocr_text(text)
     return out;
 }
 
-async function recognize_text(input)
+async function recognize_text(group_uid, input)
 {
-    if (HAS_TESSERACT) {
-        const from_file = typeof input === 'string';
-        const text = await run('tesseract',
-            [from_file ? input : '-', 'stdout', '-l', 'ron+eng', '--psm', '4'],
-            from_file ? {} : {input});
+    if (has_tesseract) {
+        const from_file = (typeof input === 'string');
+        const text = await command_run('tesseract', [from_file ? input : '-', 'stdout', '-l', 'ron+eng', '--psm', '4'], from_file ? {} : {input});
         return text.toString();
     }
-    const worker = await get_ocr_worker();
+    const worker = await get_ocr_worker(group_uid);
     const {data} = await worker.recognize(input);
     return data.text;
 }
 
-async function ocr_receipt(name, tmp, reason, orientations)
+async function ocr_receipt(group_uid, tmp, reason, orientations)
 {
-    return timed_stage(name, 'OCR', () => ocr_receipt_attempts(name, tmp, reason, orientations));
+    return log_stage(group_uid, 'ocr', `reason=${format_log_value(reason)}`, () => ocr_receipt_attempts(group_uid, tmp, reason, orientations));
 }
 
-async function ocr_receipt_attempts(name, tmp, reason, orientations)
+async function ocr_receipt_attempts(group_uid, tmp, reason, orientations)
 {
-    log('🔍', `${name}: falling back to OCR (${reason})`);
     const attempts = [[], ['-colorspace', 'Gray', '-resize', '250%', '-normalize']];
     for (const orient of orientations) {
-        const rotate = orient === 0 ? [] : ['-rotate', String(orient)];
+        const rotate = (orient === 0) ? [] : ['-rotate', String(orient)];
         for (const pre of attempts) {
             const args = [...rotate, ...pre];
-            const input = args.length === 0 ? tmp : await convert([tmp, ...args, 'png:-']);
-            const text = await recognize_text(input);
+            const input = (args.length === 0) ? tmp : await convert([tmp, ...args, 'png:-']);
+            const text = await recognize_text(group_uid, input);
             const ocr = parse_ocr_text(text);
-            if (!ocr.merchant || ocr.total === null || !ocr.date || !ocr.time) {
+            if (!ocr.merchant || (ocr.total === null) || !ocr.date || !ocr.time) {
                 continue;
             }
             if (!ocr.total_confirmed) {
-                log('⚠️', `${name}: OCR total ${ocr.total} could not be cross-checked (NUMERAR-REST unreadable)`);
+                // NUMERAR-REST was unreadable.
+                log(group_uid, 'ocr_total_unconfirmed', `total=${ocr.total}`);
             }
             ocr.lines = text.split('\n').map(v => v.trim()).filter(Boolean);
             return {source: 'ocr', reason, rotate: orient, ocr};
@@ -706,96 +727,114 @@ async function ocr_receipt_attempts(name, tmp, reason, orientations)
 
 // ---- naming ----
 
-function merchant_slug(name)
+function merchant_slug_from_name(name)
 {
     const upper = name.toUpperCase();
     if (upper.includes('FARMACI')) {
         return 'farmacy';
     }
-    for (const [needle, slug] of MERCHANT_ALIASES) {
+    for (const [needle, slug] of merchant_aliases) {
         if (upper.includes(needle)) {
             return slug;
         }
     }
     const stripped = upper.replace(/\b(I\.?C\.?S\.?|S\.?R\.?L\.?|S\.?A\.?|Î\.?M\.?)\b/g, ' ');
     const m = stripped.match(/[A-Z0-9]+/);
-    return m === null ? 'unknown' : m[0].toLowerCase();
+    return (m === null) ? 'unknown' : m[0].toLowerCase();
 }
 
-function target_base(mev)
+function target_base_from_facts(facts)
 {
-    const {merchant, total, date, time} = mev;
-    if (!merchant || total === null || !date || !time) {
+    const {merchant, total, date, time} = facts;
+    if (!merchant || (total === null) || !date || !time) {
         return null;
     }
     const ymd = date.replace(/-/g, '');
     const hm = time.slice(0, 5).replace(':', '');
-    return `${ymd}_${hm}_${merchant_slug(merchant)}_${Math.round(total)}`;
+    return `${ymd}_${hm}_${merchant_slug_from_name(merchant)}_${Math.round(total)}`;
 }
 
 // ---- per-file processing ----
 
-async function image_area(file)
+async function image_area_of(file)
 {
     const [w, h] = (await convert([file, '-format', '%w %h', 'info:'])).toString().split(' ').map(Number);
-    return w * h;
+    return w*h;
 }
 
-async function process_file(dir, name)
+// One group per photo: photo_begin, the stages, then photo_end_ok (done,
+// duplicate) or photo_end_error (failed, or retried after the cooldown).
+async function photo_process(root_uid, dir, name)
+{
+    const group_uid = log_group_spawn(root_uid);
+    const start = performance.now();
+    log(group_uid, 'photo_begin', `name=${format_log_value(name)}`);
+    const out = await photo_process_stages(group_uid, dir, name);
+    const elapsed = format_seconds(performance.now() - start);
+    if ((out !== null) && (out.status !== 'failed')) {
+        log(group_uid, 'photo_end_ok', `${elapsed} status=${out.status} target=${format_log_value(out.target)}`);
+        return out;
+    }
+    const outcome = (out === null) ? `retry_in=${format_seconds(retry_cooldown_ms)}` : `status=failed reason=${format_log_value(out.reason)}`;
+    log(group_uid, 'photo_end_error', `${elapsed} ${outcome}`);
+    return out;
+}
+
+async function photo_process_stages(group_uid, dir, name)
 {
     const file = fs_path_join(dir, name);
-    const tmp = fs_path_join(dir, TMP_FILE);
-    log('📸', `${name}: processing...`);
+    const tmp = fs_path_join(dir, tmp_file);
 
     let quad;
     let size;
     try {
-        quad = await timed_stage(name, 'receipt detection', () => find_quad(file, fs_path_join(dir, MASK_FILE)));
-        size = await timed_stage(name, 'perspective correction', () => warp(file, quad, tmp));
-    } catch (e) {
-        log('⚠️', `${name}: ${e.message} — skipped`);
-        return {status: 'failed', reason: e.message};
+        quad = await log_stage(group_uid, 'receipt_detect', '', () => find_quad(group_uid, file, fs_path_join(dir, mask_file)));
+        size = await log_stage(group_uid, 'perspective_warp', '', () => warp(file, quad, tmp));
     }
-    log('✂️', `${name}: receipt cut out and straightened (${size.w}x${size.h})`);
+    catch (error) {
+        return {status: 'failed', reason: error.message};
+    }
+    log(group_uid, 'receipt_straightened', `size=${size.w}x${size.h}`);
 
     let receipt = null;
     let transient = false;
-    const decoded = await timed_stage(name, 'QR decoding', () => decode_qr([tmp, file]));
+    const decoded = await log_stage(group_uid, 'qr_decode', '', () => decode_qr([tmp, file]));
     if (decoded === null) {
         // No QR to orient by: a landscape result must be sideways; portrait may
         // still be upside down — let OCR pick the orientation that parses.
-        const orientations = size.w > size.h ? [90, 270] : [0, 180];
-        receipt = await ocr_receipt(name, tmp, 'QR undecodable', orientations);
+        const orientations = (size.w > size.h) ? [90, 270] : [0, 180];
+        receipt = await ocr_receipt(group_uid, tmp, 'QR undecodable', orientations);
     }
     else {
         if (decoded.rot !== 0) {
-            const upright = [0, 1, 2, 3].map(i => quad[(i + decoded.rot) % 4]);
+            const upright = [0, 1, 2, 3].map(v => quad[(v + decoded.rot) % 4]);
             size = await warp(file, upright, tmp);
-            log('🔃', `${name}: rotated ${decoded.rot * 90}° to upright (${size.w}x${size.h})`);
+            log(group_uid, 'receipt_rotated_by_qr', `angle=${decoded.rot*90} size=${size.w}x${size.h}`);
         }
-        log('🔳', `${name}: QR → ${decoded.url}`);
+        log(group_uid, 'qr_decoded', `url=${format_log_value(decoded.url)}`);
         try {
-            const fetched = await timed_stage(name, 'MEV lookup', () => fetch_receipt(decoded.url));
+            const fetched = await log_stage(group_uid, 'mev_fetch', '', () => fetch_receipt(group_uid, decoded.url));
             if (fetched.mev) {
-                receipt = {source: 'mev', ...fetched};
+                receipt = {source: 'mev', qr_url: fetched.qr_url, url_data: fetched.url_data, http_status: fetched.http_status, mev: fetched.mev};
             }
             else {
-                receipt = await ocr_receipt(name, tmp, `MEV page had no receipt data (http ${fetched.http_status})`, [0]);
+                receipt = await ocr_receipt(group_uid, tmp, `MEV page had no receipt data (http ${fetched.http_status})`, [0]);
                 transient = true;
             }
-        } catch (e) {
-            receipt = await ocr_receipt(name, tmp, `MEV fetch failed (${e.message})`, [0]);
+        }
+        catch (error) {
+            receipt = await ocr_receipt(group_uid, tmp, `MEV fetch failed (${error.message})`, [0]);
             transient = true;
         }
     }
     if (receipt === null) {
         await fs_rmf(tmp);
         if (transient) {
-            log('⚠️', `${name}: MEV unreachable and OCR incomplete — will retry in ${RETRY_COOLDOWN_MS / 1000}s`);
-            retry_cooldown.set(name, Date.now() + RETRY_COOLDOWN_MS);
+            // MEV unreachable and OCR incomplete.
+            retry_cooldown.set(name, Date.now() + retry_cooldown_ms);
             return null;
         }
-        log('⚠️', `${name}: no usable QR/MEV data and OCR incomplete — re-shoot closer/sharper; skipped`);
+        log(group_uid, 'photo_unreadable', 'hint="re-shoot closer/sharper"');
         return {status: 'failed', reason: 'qr/mev/ocr all failed'};
     }
 
@@ -804,46 +843,46 @@ async function process_file(dir, name)
         if (receipt.rotate !== 180) {
             size = {w: size.h, h: size.w};
         }
-        log('🔃', `${name}: rotated ${receipt.rotate}° to upright (per OCR)`);
+        log(group_uid, 'receipt_rotated_by_ocr', `angle=${receipt.rotate}`);
     }
     delete receipt.rotate;
 
     const facts = receipt.mev || receipt.ocr;
-    const source_emoji = receipt.source === 'mev' ? '🌐' : '📝';
-    log(source_emoji, `${name}: ${receipt.source} says ${facts.merchant} | ${facts.date} ${facts.time} | total ${facts.total}`);
+    log(group_uid, 'receipt_facts', `source=${receipt.source} merchant=${format_log_value(facts.merchant)} date=${format_log_value(facts.date)} time=${format_log_value(facts.time)} total=${format_log_value(facts.total)}`);
 
-    const base = target_base(facts);
+    const base = target_base_from_facts(facts);
     if (base === null) {
         await fs_rmf(tmp);
-        log('⚠️', `${name}: extracted data incomplete, cannot build filename — skipped`);
         return {status: 'failed', reason: 'incomplete data'};
     }
 
     receipt.image = `${base}.jpg`;
     const jpg = fs_path_join(dir, `${base}.jpg`);
     const json_file = fs_path_join(dir, `${base}.json`);
-    const new_area = size.w * size.h;
+    const new_area = size.w*size.h;
     if (await fs_exists(jpg)) {
-        const old_area = await image_area(jpg);
+        const old_area = await image_area_of(jpg);
         if (new_area <= old_area) {
             await fs_rmf(tmp);
-            log('⏭️', `${name}: ${base}.jpg already exists with equal/better quality (${old_area}px² vs ${new_area}px²) — kept`);
+            log(group_uid, 'photo_duplicate_kept', `target=${format_log_value(`${base}.jpg`)} old_area=${old_area} new_area=${new_area}`);
             let old_source = null;
             try {
                 old_source = (await fs_read_json(json_file)).source || 'mev';
-            } catch (e) { /* missing or unreadable sidecar */ }
-            if (old_source === null || (old_source === 'ocr' && receipt.source === 'mev')) {
+            }
+            catch {
+                // missing or unreadable sidecar
+            }
+            if ((old_source === null) || ((old_source === 'ocr') && (receipt.source === 'mev'))) {
                 await fs_write_json(json_file, receipt);
-                log('📄', `${name}: ${base}.json ${old_source === null ? 'was missing — written' : 'upgraded ocr → mev'}`);
+                log(group_uid, 'sidecar_written', `target=${format_log_value(`${base}.json`)} was=${(old_source === null) ? 'missing' : 'ocr'}`);
             }
             return {status: 'duplicate', target: `${base}.jpg`};
         }
-        log('🔄', `${name}: better quality than existing ${base}.jpg (${new_area}px² > ${old_area}px²) — overwriting`);
+        log(group_uid, 'photo_duplicate_replaced', `target=${format_log_value(`${base}.jpg`)} old_area=${old_area} new_area=${new_area}`);
     }
 
     await fs_rename(tmp, jpg);
     await fs_write_json(json_file, receipt);
-    log('💾', `${name}: saved ${base}.jpg + ${base}.json`);
     return {status: 'done', target: `${base}.jpg`, area: new_area};
 }
 
@@ -852,22 +891,23 @@ async function process_file(dir, name)
 async function load_state(dir)
 {
     try {
-        return await fs_read_json(fs_path_join(dir, STATE_FILE));
-    } catch (e) {
+        return await fs_read_json(fs_path_join(dir, state_file));
+    }
+    catch {
         return {};
     }
 }
 
 async function save_state(dir, state)
 {
-    await fs_write_json(fs_path_join(dir, STATE_FILE), state);
+    await fs_write_json(fs_path_join(dir, state_file), state);
 }
 
 async function list_candidates(dir)
 {
     const out = [];
     for (const name of (await fs_readdir(dir)).sort()) {
-        if (name.startsWith('.') || !IMAGE_RE.test(name) || OUTPUT_RE.test(name)) {
+        if (name.startsWith('.') || !image_re.test(name) || output_re.test(name)) {
             continue;
         }
         try {
@@ -875,22 +915,25 @@ async function list_candidates(dir)
             if (stat.isFile()) {
                 out.push({name, size: stat.size, mtime: stat.mtimeMs});
             }
-        } catch (e) { /* vanished between readdir and stat */ }
+        }
+        catch {
+            // vanished between readdir and stat
+        }
     }
     return out;
 }
 
-async function scan(dir, state, settling)
+async function scan(root_uid, dir, state, settling)
 {
     let processed = 0;
     for (const cand of await list_candidates(dir)) {
         const known = state[cand.name];
-        if (known && known.size === cand.size && known.mtime === cand.mtime) {
+        if (known && (known.size === cand.size) && (known.mtime === cand.mtime)) {
             // Self-heal: a deleted output means the work needs redoing.
-            if (known.status === 'failed' || await fs_exists(fs_path_join(dir, known.target))) {
+            if ((known.status === 'failed') || (await fs_exists(fs_path_join(dir, known.target)))) {
                 continue;
             }
-            log('🔁', `${cand.name}: output ${known.target} is missing — re-queued`);
+            log(root_uid, 'scan_output_missing', `name=${format_log_value(cand.name)} target=${format_log_value(known.target)}`);
             delete state[cand.name];
         }
         if ((retry_cooldown.get(cand.name) || 0) > Date.now()) {
@@ -900,16 +943,16 @@ async function scan(dir, state, settling)
         // Only touch a file once its size/mtime survived one full poll interval —
         // it may still be uploading.
         const pending = settling.get(cand.name);
-        if (!pending || pending.size !== cand.size || pending.mtime !== cand.mtime) {
+        if (!pending || (pending.size !== cand.size) || (pending.mtime !== cand.mtime)) {
             if (!pending && !retry_cooldown.has(cand.name)) {
-                log('🆕', `${cand.name}: new file detected — queued`);
+                log(root_uid, 'scan_new_file', `name=${format_log_value(cand.name)}`);
             }
             settling.set(cand.name, cand);
             continue;
         }
         settling.delete(cand.name);
 
-        const result = await process_file(dir, cand.name);
+        const result = await photo_process(root_uid, dir, cand.name);
         if (result !== null) {
             state[cand.name] = {size: cand.size, mtime: cand.mtime, ...result};
             await save_state(dir, state);

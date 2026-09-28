@@ -18,15 +18,16 @@ function main()
 {
     document.getElementById('version').textContent = `v${version}`;
 
-    // theme: OS default, persisted override, resolved attribute always set
-    const stored_theme = localStorage.getItem('theme');
-    const os_theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-    document.documentElement.dataset.theme = stored_theme === null ? os_theme : stored_theme;
-
+    // theme: stamped by index.html before the first paint; the toggle saves the choice
     theme_toggle.addEventListener('click', function () {
-        const next_theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+        const next_theme = (document.documentElement.dataset.theme === 'dark') ? 'light' : 'dark';
         document.documentElement.dataset.theme = next_theme;
-        localStorage.setItem('theme', next_theme);
+        try {
+            localStorage.setItem('theme', next_theme);
+        }
+        catch {
+            report('theme-save-failed', next_theme);
+        }
     });
 
     // the label tap is the user gesture that unlocks audio for the later save sound
@@ -63,7 +64,11 @@ function report(event, detail)
         body: JSON.stringify({version, event, detail}),
         headers: {'content-type': 'application/json'},
         method: 'POST',
-    }).catch(() => {});
+    }).catch(ignore);
+}
+
+function ignore()
+{
 }
 
 // save confirmation sound: the stock Android shutter click (AOSP camera_click.ogg)
@@ -77,7 +82,8 @@ async function load_shutter_sound()
             audio_context = new AudioContext();
         }
         shutter_buffer = await audio_context.decodeAudioData(encoded);
-    } catch {
+    }
+    catch {
         report('shutter-sound-failed', 'using synthesized click');
     }
 }
@@ -85,11 +91,11 @@ async function load_shutter_sound()
 function play_click(at, frequency)
 {
     const start = audio_context.currentTime + at;
-    const length = Math.round(audio_context.sampleRate * 0.045);
+    const length = Math.round(audio_context.sampleRate*0.045);
     const buffer = audio_context.createBuffer(1, length, audio_context.sampleRate);
     const samples = buffer.getChannelData(0);
     for (let i = 0; i < length; i++) {
-        samples[i] = (Math.random() * 2 - 1) * (1 - i / length);
+        samples[i] = (Math.random()*2 - 1)*(1 - i/length);
     }
 
     const source = audio_context.createBufferSource();
@@ -148,7 +154,8 @@ async function upload(blob)
         show_toast(`saved ${result.saved} · ${result.kb} kB`);
         status.textContent = `${saved_count} saved this session`;
         next_count.textContent = `${saved_count} saved`;
-    } catch (error) {
+    }
+    catch (error) {
         report('upload-failed', error.message);
         show_toast(`upload failed: ${error.message}`);
         status.textContent = 'upload failed — try again';
@@ -170,7 +177,8 @@ function reopen_camera()
 {
     try {
         file_input.showPicker();
-    } catch {
+    }
+    catch {
         report('auto-reopen-blocked', 'showing tap-anywhere overlay');
         next.hidden = false;
     }

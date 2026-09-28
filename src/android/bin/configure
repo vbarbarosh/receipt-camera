@@ -8,6 +8,17 @@ script=`realpath $0`
 scriptdir=`dirname $script`
 scriptname=`basename $script`
 
+BLACK="\e[30m" RED="\e[31m" GREEN="\e[32m" YELLOW="\e[33m" BLUE="\e[34m"
+PURPLE="\e[35m" CYAN="\e[36m" WHITE="\e[37m" RESET="\e[0m"
+
+EXIT_MESSAGE="${RED}src/android/bin/configure failed${RESET}"
+
+# http://redsymbol.net/articles/bash-exit-traps/
+# http://redsymbol.net/articles/unofficial-bash-strict-mode/#essential-cleanup
+tempdir=`mktemp -d -t tmp.XXXXXXXXXX`
+trap 'rm -rf $tempdir; echo -e "$EXIT_MESSAGE"' EXIT
+cd $tempdir
+
 cd $scriptdir/..
 
 # Installs the apk build toolchain into ./toolchain when it is missing:
@@ -21,11 +32,12 @@ platform=$android/sdk/platforms/android-34
 
 if [ -x $jdk/bin/javac ] && [ -x $bt/aapt2 ] && [ -e $platform/android.jar ]; then
     echo "$scriptname: apk toolchain ok ($android)"
+    EXIT_MESSAGE="${GREEN}src/android/bin/configure succeeded${RESET}"
     exit 0
 fi
 
-tmp=$android/tmp
-mkdir -p $tmp
+tmp=$tempdir
+mkdir -p $android
 
 if [ ! -x $jdk/bin/javac ]; then
     echo "$scriptname: downloading JDK 17 (Temurin)..."
@@ -61,5 +73,6 @@ if [ ! -e $platform/android.jar ]; then
     mv $tmp/platform/android-* $platform
 fi
 
-rm -rf $tmp
 echo "$scriptname: apk toolchain installed ($android)"
+
+EXIT_MESSAGE="${GREEN}src/android/bin/configure succeeded${RESET}"

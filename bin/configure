@@ -8,12 +8,25 @@ script=`realpath $0`
 scriptdir=`dirname $script`
 scriptname=`basename $script`
 
+BLACK="\e[30m" RED="\e[31m" GREEN="\e[32m" YELLOW="\e[33m" BLUE="\e[34m"
+PURPLE="\e[35m" CYAN="\e[36m" WHITE="\e[37m" RESET="\e[0m"
+
+EXIT_MESSAGE="${RED}bin/configure failed${RESET}"
+
+# http://redsymbol.net/articles/bash-exit-traps/
+# http://redsymbol.net/articles/unofficial-bash-strict-mode/#essential-cleanup
+tempdir=`mktemp -d -t tmp.XXXXXXXXXX`
+trap 'rm -rf $tempdir; echo -e "$EXIT_MESSAGE"' EXIT
+cd $tempdir
+
 cd $scriptdir/..
 
 # One shared clock for the whole run: the single ts opens "[MM:SS" and each
 # line's own "component]" label closes it. Separator lines carry a bare "]";
 # the final sed glues it to the timestamp: "[00:01 ]" -> "[00:01]".
 {
+    npm install 2>&1 | sed 's/^/root] /'
+    echo ']'
     src/http/bin/configure | sed 's/^/http] /'
     echo ']'
     src/parser/bin/configure | sed 's/^/parser] /'
@@ -21,3 +34,5 @@ cd $scriptdir/..
     src/android/bin/configure | sed 's/^/android] /'
     echo ']'
 } | ts -s '[%M:%S' | sed 's/^\(\[[0-9][0-9]:[0-9][0-9]\) ]$/\1]/'
+
+EXIT_MESSAGE="${GREEN}bin/configure succeeded${RESET}"

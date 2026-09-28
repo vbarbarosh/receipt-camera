@@ -1,0 +1,7 @@
+{
+  "name": "receipt-drop",
+  "private": true,
+  "dependencies": {
+    "@vbarbarosh/node-helpers": "^3.78.0"
+  }
+}
