@@ -6,8 +6,9 @@
 #   WeChat    jsQR and ZXing locate a code by scanning for the 1:1:3:1:1 run
 #             that crosses a finder pattern. An under-inked thermal head prints
 #             those finders hollow, the run reads as 1:1:1:1:1:1:1, and
-#             detection never starts — no amount of thresholding recovers it.
-#             WeChat finds the code another way and still reads those.
+#             detection never starts — thresholding alone does not recover it,
+#             closing the gaps does (INKED). WeChat finds the code another way
+#             and still reads most of those.
 #   zxing-cpp the same algorithm as index.js's @zxing/library, but the C++
 #             implementation: it reads thermal receipts the JS port gives up on.
 #
@@ -27,6 +28,11 @@ import sys
 # scales to feed zxing-cpp, relative to the source; a code missed at one
 # sampling grid is often clean at another
 SCALES = (0.72, 1.0, 2.0)
+
+# (cut, radius) for a hollow-printed code, tried only when the plain image
+# fails: levels stretched, cut near paper white so faint ink is dark, then the
+# gaps inside each module closed with a disk of that radius
+INKED = ((0.55, 2), (0.55, 3), (0.6, 2), (0.6, 3))
 
 
 def hit(url, tl, tr):
@@ -62,12 +68,29 @@ def read_zxing(cv2, zxingcpp, image):
     return None
 
 
+def fill_ink(cv2, numpy, image, cut, radius):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    lo, hi = numpy.percentile(gray, (2, 99))
+    stretched = numpy.clip((gray.astype(numpy.float32) - lo) * 255 / max(hi - lo, 1), 0, 255).astype(numpy.uint8)
+    _, bw = cv2.threshold(stretched, int(255 * cut), 255, cv2.THRESH_BINARY)
+    disk = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
+    # white is the foreground to OpenCV: opening it closes the dark modules
+    return cv2.cvtColor(cv2.morphologyEx(bw, cv2.MORPH_OPEN, disk), cv2.COLOR_GRAY2BGR)
+
+
+def variants(cv2, numpy, image):
+    yield image
+    for cut, radius in INKED:
+        yield fill_ink(cv2, numpy, image, cut, radius)
+
+
 def main():
     args = sys.argv[1:]
     if not args:
         return 2
 
     import cv2
+    import numpy
     import zxingcpp
     if args[0] == '--check':
         # Decode a known local fixture with each engine. Importing plain
@@ -87,11 +110,12 @@ def main():
     if image is None:
         return 1
 
-    for read in (read_wechat, lambda c, i: read_zxing(c, zxingcpp, i)):
-        out = read(cv2, image)
-        if out is not None:
-            print(json.dumps(out))
-            return 0
+    for variant in variants(cv2, numpy, image):
+        for read in (read_wechat, lambda c, i: read_zxing(c, zxingcpp, i)):
+            out = read(cv2, variant)
+            if out is not None:
+                print(json.dumps(out))
+                return 0
     return 1
 
 
