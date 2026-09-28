@@ -1,0 +1,49 @@
+#!/bin/bash
+
+# http://www.gnu.org/software/bash/manual/bash.html#The-Set-Builtin
+# http://redsymbol.net/articles/unofficial-bash-strict-mode
+set -o nounset -o errexit -o pipefail
+
+script=`realpath $0`
+scriptdir=`dirname $script`
+scriptname=`basename $script`
+
+cd $scriptdir/..
+
+RED="\e[31m" GREEN="\e[32m" RESET="\e[0m"
+
+EXIT_MESSAGE="${RED}bin/test failed${RESET}"
+trap 'echo -e "$EXIT_MESSAGE"' EXIT
+
+# The parser tests need rembg, the native QR scanners and tesseract, so they
+# run in the image bin/build makes. The working tree's src/ (with the
+# node_modules bin/configure installs) is mounted over the image's: a code
+# change is tested without a rebuild, and the *.jpg fixtures are there.
+if ! docker image inspect receipt-drop >/dev/null 2>&1; then
+    echo "receipt-drop image not found; run bin/build first" >&2
+    exit 1
+fi
+
+# One shared clock for the whole run, as in bin/build: the single ts opens
+# "[MM:SS" and each line's own "component]" label closes it.
+{
+    failed=()
+    for file in src/parser/tests/*.test.js; do
+        echo "parser] $file"
+        if ! docker run --rm -v "$PWD/src:/app/src:ro" -w /app receipt-drop node "$file" 2>&1 | sed -u 's/^/parser] /'; then
+            failed+=("$file")
+        fi
+    done
+    echo ']'
+    echo "android] src/android/bin/test"
+    if ! src/android/bin/test 2>&1 | sed -u 's/^/android] /'; then
+        failed+=(src/android/bin/test)
+    fi
+    echo ']'
+    if test ${#failed[@]} -gt 0; then
+        echo "test] failed: ${failed[*]}"
+        exit 1
+    fi
+} | ts -s '[%M:%S' | sed 's/^\(\[[0-9][0-9]:[0-9][0-9]\) ]$/\1]/'
+
+EXIT_MESSAGE="${GREEN}bin/test succeeded${RESET}"
