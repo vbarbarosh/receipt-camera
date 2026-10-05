@@ -37,3 +37,17 @@ Use a virtual environment if your Python installation requires one. Use the
 contrib OpenCV wheel instead of the plain wheel; they share the `cv2` module.
 ImageMagick must also be installed. The initial model check allows up to two
 minutes for loading/downloading; rerun after fixing a reported failure.
+
+## As a service
+
+A service manager runs the image as is, without `bin/run`:
+
+    docker run -p 8080:8080 -v ~/Documents/receipts:/app/data --userns=keep-id receipt-drop
+
+With docker, `-u "$(id -u):$(id -g)"` replaces `--userns=keep-id`. The receipts
+folder is the `/app/data` volume and `PORT` is the listening port. The port
+opens about 6 s after the start, once the startup checks pass. SIGTERM stops
+it at once. A photo cut off mid-parse is parsed again on the next start, so
+the service can be stopped whenever it is idle. Run one instance per folder:
+two parsers on one folder race on `.receipts_state.json`. Behind `-p`, the
+startup log prints the container's address, not the one the phone opens.

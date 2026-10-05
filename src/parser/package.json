@@ -3,9 +3,9 @@
   "private": true,
   "description": "Clean receipt photos, extract fiscal data via QR + MEV, rename, watch for new files. Optional native QR scanners: pip install opencv-contrib-python-headless zxing-cpp",
   "dependencies": {
-    "@vbarbarosh/node-helpers": "^3.78.0",
-    "@zxing/library": "^0.21.3",
+    "@vbarbarosh/node-helpers": "^3.78.1",
+    "@zxing/library": "^0.23.0",
     "jsqr": "^1.4.0",
-    "tesseract.js": "^5.1.1"
+    "tesseract.js": "^7.0.0"
   }
 }
