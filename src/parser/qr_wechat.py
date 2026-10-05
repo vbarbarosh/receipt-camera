@@ -98,7 +98,7 @@ def main():
         image = cv2.imread(str(Path(__file__).with_name('fixtures') / 'qr-check.png'))
         if image is None:
             raise RuntimeError('native QR self-test image is missing')
-        expected = 'https://receipt-drop.invalid/check'
+        expected = 'https://receipt-camera.invalid/check'
         for label, read in [('WeChat', lambda: read_wechat(cv2, image)),
                             ('zxing-cpp', lambda: read_zxing(cv2, zxingcpp, image))]:
             result = read()

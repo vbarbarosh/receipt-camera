@@ -1,5 +1,5 @@
 {
-  "name": "receipt-drop",
+  "name": "receipt-camera",
   "private": true,
   "dependencies": {
     "@vbarbarosh/node-helpers": "^3.78.1"

@@ -26,9 +26,9 @@ android=${ANDROID:-$PWD/toolchain}
 # The only Android references are compile-time AF constants. These policy
 # tests run on the JVM without a device or a mocked camera implementation.
 "$android/jdk/bin/javac" -cp "$android/sdk/platforms/android-34/android.jar" -d "$tempdir" \
-    src/app/receiptdrop/FocusLock.java \
-    src/app/receiptdrop/SteadyBox.java \
-    tests/app/receiptdrop/CaptureQualityTest.java
-"$android/jdk/bin/java" -cp "$tempdir" app.receiptdrop.CaptureQualityTest
+    src/app/receiptcamera/FocusLock.java \
+    src/app/receiptcamera/SteadyBox.java \
+    tests/app/receiptcamera/CaptureQualityTest.java
+"$android/jdk/bin/java" -cp "$tempdir" app.receiptcamera.CaptureQualityTest
 
 EXIT_MESSAGE="${GREEN}src/android/bin/test succeeded${RESET}"

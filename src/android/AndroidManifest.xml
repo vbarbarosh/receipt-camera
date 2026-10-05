@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="app.receiptdrop"
+    package="app.receiptcamera"
     android:versionCode="20"
     android:versionName="2.9">
 
@@ -13,7 +13,7 @@
     <uses-feature android:name="android.hardware.camera" android:required="true"/>
 
     <application
-        android:label="Receipt Drop"
+        android:label="Receipt Camera"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
@@ -29,7 +29,7 @@
         </activity>
         <provider
             android:name=".ApkProvider"
-            android:authorities="app.receiptdrop.apk"
+            android:authorities="app.receiptcamera.apk"
             android:exported="false"
             android:grantUriPermissions="true"/>
     </application>

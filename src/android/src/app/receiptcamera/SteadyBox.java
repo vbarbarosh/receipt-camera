@@ -1,4 +1,4 @@
-package app.receiptdrop;
+package app.receiptcamera;
 
 // Compare with a retained anchor so sub-threshold frame-to-frame drift adds up.
 final class SteadyBox

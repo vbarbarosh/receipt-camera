@@ -1,4 +1,4 @@
-package app.receiptdrop;
+package app.receiptcamera;
 
 import android.content.ContentProvider;
 import android.content.ContentValues;

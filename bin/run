@@ -49,6 +49,6 @@ docker run --rm -i "${tty[@]}" \
     -e REMBG_MODEL=$REMBG_MODEL \
     -v "$receipts_dir:/app/data" \
     "${user[@]}" \
-    receipt-drop
+    receipt-camera
 
 EXIT_MESSAGE="${GREEN}bin/run succeeded${RESET}"

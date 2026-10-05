@@ -1,4 +1,4 @@
-package app.receiptdrop;
+package app.receiptcamera;
 
 import android.Manifest;
 import android.app.Activity;
@@ -445,7 +445,7 @@ public class MainActivity extends Activity
         new Thread(() -> {
             try {
                 HttpURLConnection connection =
-                    (HttpURLConnection) new URL(server() + "/receipt-drop.apk").openConnection();
+                    (HttpURLConnection) new URL(server() + "/receipt-camera.apk").openConnection();
                 connection.setConnectTimeout(3000);
                 InputStream in = connection.getInputStream();
                 FileOutputStream out = new FileOutputStream(new File(getCacheDir(), "update.apk"));
@@ -457,7 +457,7 @@ public class MainActivity extends Activity
                 in.close();
                 connection.disconnect();
                 Intent install = new Intent(Intent.ACTION_VIEW);
-                install.setDataAndType(Uri.parse("content://app.receiptdrop.apk/update.apk"),
+                install.setDataAndType(Uri.parse("content://app.receiptcamera.apk/update.apk"),
                     "application/vnd.android.package-archive");
                 install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                 startActivity(install);
@@ -1540,7 +1540,7 @@ public class MainActivity extends Activity
 
     private SharedPreferences prefs()
     {
-        return getSharedPreferences("receiptdrop", MODE_PRIVATE);
+        return getSharedPreferences("receiptcamera", MODE_PRIVATE);
     }
 
     private void show_server_dialog()

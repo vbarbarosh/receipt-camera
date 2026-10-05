@@ -23,9 +23,9 @@ cd $scriptdir/..
 
 # Builds the apk, then the docker image. The image builds the apk again from
 # the same sources (see Dockerfile), so it always serves the current app; the
-# local build keeps src/android/receipt-drop.apk current for copying into
-# src/http/public/ (see docs/android.md). The image is tagged receipt-drop and
-# receipt-drop:apk-<versionCode>.
+# local build keeps src/android/receipt-camera.apk current for copying into
+# src/http/public/ (see docs/android.md). The image is tagged receipt-camera and
+# receipt-camera:apk-<versionCode>.
 #
 # One shared clock for the whole run: the single ts opens "[MM:SS" and each
 # line's own "component]" label closes it. Separator lines carry a bare "]";
@@ -33,7 +33,7 @@ cd $scriptdir/..
 {
     src/android/bin/build 2>&1 | sed -u 's/^/android] /'
     echo ']'
-    docker build -t receipt-drop -t receipt-drop:apk-`cat src/android/apk-version.txt` . 2>&1 | sed -u 's/^/docker] /'
+    docker build -t receipt-camera -t receipt-camera:apk-`cat src/android/apk-version.txt` . 2>&1 | sed -u 's/^/docker] /'
 } | ts -s '[%M:%S' | sed 's/^\(\[[0-9][0-9]:[0-9][0-9]\) ]$/\1]/'
 
 EXIT_MESSAGE="${GREEN}bin/build succeeded${RESET}"

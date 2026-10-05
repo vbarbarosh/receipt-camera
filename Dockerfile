@@ -1,8 +1,8 @@
-# Receipt Drop: http upload server + receipt parser, serving the Android app
+# Receipt Camera: http upload server + receipt parser, serving the Android app
 # built from src/android/ in the same image. bin/build builds it.
 #
-#   docker build -t receipt-drop .
-#   docker run --rm -p 8080:8080 -v ~/Documents/receipts:/app/data receipt-drop
+#   docker build -t receipt-camera .
+#   docker run --rm -p 8080:8080 -v ~/Documents/receipts:/app/data receipt-camera
 #
 # Photos and parsed receipts land in /app/data. PORT changes the listening port.
 # The container runs as the unprivileged "node" user (uid 1000). When the
@@ -64,7 +64,7 @@ COPY src/run.js src/run.js
 COPY src/helpers/ src/helpers/
 COPY src/http/ src/http/
 COPY src/parser/ src/parser/
-COPY --from=apk /app/src/android/receipt-drop.apk src/http/public/receipt-drop.apk
+COPY --from=apk /app/src/android/receipt-camera.apk src/http/public/receipt-camera.apk
 COPY --from=apk /app/src/android/apk-version.txt src/http/public/apk-version.txt
 
 # Importing rembg JIT-compiles pymatting's numba functions, ~50 s per fresh

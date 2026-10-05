@@ -1,4 +1,4 @@
-package app.receiptdrop;
+package app.receiptcamera;
 
 import android.hardware.camera2.CaptureResult;
 

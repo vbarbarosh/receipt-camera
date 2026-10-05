@@ -1,4 +1,4 @@
-# Working on receipt-drop
+# Working on receipt-camera
 
 Every file follows the rulebook: https://vbarbarosh.github.io/rules/
 (source: https://github.com/vbarbarosh/rules). Read it before writing code;

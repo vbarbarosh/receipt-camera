@@ -1,5 +1,5 @@
 {
-  "name": "receipt-drop",
+  "name": "receipt-camera",
   "private": true,
   "scripts": {
     "start": "node index.js"

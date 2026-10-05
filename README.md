@@ -1,6 +1,6 @@
-# Receipt Drop
+# Receipt Camera
 
-![Receipt Drop](img/cover-light.png)
+![Receipt Camera](img/cover-light.png)
 
 Point your phone at a receipt, take the picture with the phone's own camera
 app, and the photo lands in a folder on your laptop — with a clean,
@@ -12,7 +12,7 @@ served by your laptop, added to the phone's home screen.
     bin/configure
     bin/build
     cd ~/Documents/receipts
-    /path/to/receipt-drop/bin/run
+    /path/to/receipt-camera/bin/run
 
 `bin/run` starts the http server and the receipt parser in the current
 directory; Ctrl-C stops both. The startup log prints the URL(s) to open on the

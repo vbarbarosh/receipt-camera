@@ -15,7 +15,7 @@ img
 notes
 phone.log
 src/android/build
-src/android/receipt-drop.apk
-src/android/receipt-drop.apk.idsig
+src/android/receipt-camera.apk
+src/android/receipt-camera.apk.idsig
 src/android/toolchain
 src/http/receipts
